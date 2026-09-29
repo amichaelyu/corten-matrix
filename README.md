@@ -129,12 +129,12 @@ The `corten-matrix` binary is both the bridge and its management CLI — it repl
 | `corten-matrix login` | Re-run the interactive iMessage login (Apple ID + password + 2FA, or hardware key on Linux). |
 | `corten-matrix install-service` / `uninstall-service` | Install or remove the background service without re-running full setup (`corten-matrix uninstall` is an alias of `uninstall-service`). `install-service` **will not overwrite a service unit it did not create** — the installer writes a richer unit than it can reproduce, and replacing that one breaks the install. If a unit is already there it refuses and tells you to use `uninstall-service` first. `uninstall-service` removes the unit from both the user and system scopes, and reports failure rather than success if anything survives. |
 | `corten-matrix reset` | Reset bridge state — prompts for confirmation (`--yes` to skip); see the warning under [Configuration](#configuration). |
-| `corten-matrix update` | **Official binary releases only.** Update in place to the latest release and restart — see [Updating](#updating). |
+| `corten-matrix update` | Update in place to the latest [release of this fork](https://github.com/amichaelyu/corten-matrix/releases) and restart — see [Updating](#updating). |
 | `corten-matrix update check` / `update force` | `check` previews the latest version + release notes without installing; `force` re-downloads and reinstalls the current release. |
 | `corten-matrix bbctl <args>` | Beeper bridge-manager CLI (register / auth / stop / delete the bridge in Beeper infra). |
 | `corten-matrix help` | Show the command list. |
 
-> `update` is shown by `corten-matrix help` **only on the official prebuilt binaries**. If you built from source it isn't there — update by pulling this repo and rebuilding (see [Updating](#updating)).
+> `update` follows this fork's GitHub releases, which the `Build fork release` workflow (`.github/workflows/build-fork-release.yml`) publishes from a plain macOS source build. Set `CORTEN_UPDATE_REPO=owner/repo` to point it at another fork.
 
 The same `start` / `stop` / `restart` / `status` / `logs` commands work on both platforms, so you don't have to remember whether the host uses `launchctl` or `systemctl` — the raw equivalents are in [Management](#management) if you'd rather wire your own thing.
 
@@ -171,9 +171,9 @@ How you update depends on how you're running corten-matrix:
   corten-matrix update force    # re-download & reinstall the current release
   ```
 
-  **The service must be installed first.** `update` doesn't take a path or guess where your binary lives — it locates it through the `corten-matrix` entry on your `PATH`. That entry is a symlink into `/usr/local/bin` that `corten-matrix setup` (and `install-service`) creates, pointing at wherever you actually keep the binary; `update` follows the symlink to that real file and replaces it in place, leaving the symlink intact. So you must have run `setup` / `install-service` (and added it to `PATH` when prompted) before `update` will work. If `corten-matrix` isn't on your `PATH`, `update` stops and tells you to install the service first rather than guessing. (If the binary lives somewhere only root can write, it uses `sudo` for the swap.)
+  `update` locates the binary through the `corten-matrix` entry on your `PATH` (the `/usr/local/bin` symlink `corten-matrix setup` creates), follows the symlink to the real file and replaces it in place with two renames, so the running bridge is never overwritten mid-flight. If nothing is on `PATH` it updates the binary you ran it from. It verifies the download against the release's `SHA256SUMS`, runs the new binary once before switching over, keeps the old one until that check passes, and restarts the service if one is installed. (If the binary lives somewhere only root can write, it uses `sudo` for the swap.)
 
-- **Built from source (macOS)** — the `update` command isn't included in source builds. Update the normal way: `git pull` and rebuild (see [Build from source (macOS)](#build-from-source-macos)), then `corten-matrix restart`.
+- **Built from source (macOS)** — `update` works there too (it replaces the built binary with the latest release). To stay on source, update the normal way: `git pull` and rebuild (see [Build from source (macOS)](#build-from-source-macos)), then `corten-matrix restart`.
 
 ## Login
 

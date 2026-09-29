@@ -82,6 +82,11 @@ export PATH := $(BREW_PREFIX)/bin:$(BREW_PREFIX)/sbin:$(PATH)
 BINARY      := $(APP_NAME)
 CGO_CFLAGS  := -I$(BREW_PREFIX)/include
 CGO_LDFLAGS := -L$(BREW_PREFIX)/lib -L$(CURDIR)
+# Homebrew dropped the libolm formula. When the C library is absent, build
+# mautrix's pure-Go olm instead (the `goolm` build tag); the two are
+# interchangeable for the bridge's end-to-bridge encryption.
+GO_TAGS     := $(if $(wildcard $(BREW_PREFIX)/include/olm/olm.h),,goolm)
+GO_BUILD_TAGS := $(if $(GO_TAGS),-tags $(GO_TAGS),)
 CARGO_ENV   := MACOSX_DEPLOYMENT_TARGET=13.0
 
 # ===========================================================================
@@ -100,7 +105,6 @@ check-deps:
 	command -v cargo >/dev/null 2>&1 || missing="$$missing rust"; \
 	command -v protoc >/dev/null 2>&1|| missing="$$missing protobuf"; \
 	command -v tmux >/dev/null 2>&1  || missing="$$missing tmux"; \
-	[ -f "$(BREW_PREFIX)/include/olm/olm.h" ] || missing="$$missing libolm"; \
 	pkg-config --exists libheif 2>/dev/null || missing="$$missing libheif"; \
 	if [ -n "$$missing" ]; then \
 		echo "Installing dependencies:$$missing"; \
@@ -309,6 +313,15 @@ ensure-rustpush-source:
 	@$(RP_PATCH) rp_apply "fallible GSA token header parsing" $(APA_DIR) \
 	  third_party/patches/apple-private-apis/fallible-gsa-token-header-parsing.patch \
 	  icloud-auth/src/client.rs '^fn parse_token_header\('
+# AppleAccount::get_token starts a full GSA SRP login whenever the requested
+# token is expired, once per caller. Twenty CloudKit/profile fetches at startup
+# became twenty logins in three seconds ("MID is invalid", then HTML error
+# pages). The breaker suspends automatic refreshes after a failure: 2 min,
+# doubling to 1 h, cleared by a success. The wrapper's own PET refresh honours
+# the same breaker (lib.rs refresh_pet_with_snapshot).
+	@$(RP_PATCH) rp_apply "token refresh backoff" $(APA_DIR) \
+	  third_party/patches/apple-private-apis/token-refresh-backoff.patch \
+	  icloud-auth/src/client.rs '^pub fn note_token_refresh\('
 # Ignore self-exclusion in fast_forward_trust (Clique self-eviction fix; ports 9f29ff1).
 	@$(RP_PATCH) rp_patch "keychain self-exclusion" $(RUSTPUSH_DIR)/src/icloud/keychain.rs \
 	  's/^            for excluded in &trust\.excludeds \{$$/            let my_id = &state.user_identity.as_ref().unwrap().identifier;\n            for excluded in &trust.excludeds {\n                if excluded == my_id {\n                    warn!(\n                        "Ignoring exclusion of ourselves ({}) from peer {}",\n                        excluded,\n                        peer.0.hash.as_ref().unwrap()\n                    );\n                    continue;\n                }/' \
@@ -405,7 +418,7 @@ build: check-deps $(RUST_LIB) $(BINARY)
 
 $(BINARY): $(GO_SRC) $(shell find . -name '*.m' -o -name '*.h' 2>/dev/null | grep -v target) go.mod go.sum $(RUST_LIB) $(COMMIT_FILE)
 	CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" \
-		go build -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/$(CMD_PKG)/
+		go build $(GO_BUILD_TAGS) -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/$(CMD_PKG)/
 	@# Sign with a STABLE identifier so macOS/TCC can track this binary across
 	@# rebuilds (the arm64 linker otherwise leaves it as 'a.out', untrackable) —
 	@# needed for the Full Disk Access probe to register it for chat.db backfill.

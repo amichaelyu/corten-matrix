@@ -1,0 +1,215 @@
+diff --git a/icloud-auth/src/client.rs b/icloud-auth/src/client.rs
+index 576f636..03f3e30 100644
+--- a/icloud-auth/src/client.rs
++++ b/icloud-auth/src/client.rs
+@@ -301,6 +301,157 @@ async fn parse_response(res: Result<Response, reqwest::Error>) -> Result<plist::
+     }
+ }
+ 
++// Circuit breaker for automatic token refreshes (a GSA SRP login each).
++//
++// Shared by every AppleAccount in the process: Apple's login servers see one
++// device, so one failure is a signal for all of them. The state is saved to
++// disk when a path has been set (set_token_refresh_backoff_path), so a crash
++// loop or a supervisor relaunch cannot reset it.
++#[derive(Clone, Default, Serialize, Deserialize)]
++struct TokenRefreshBackoff {
++    /// Unix ms before which no automatic refresh may start.
++    next_allowed_ms: u64,
++    /// Consecutive failures of any kind. Cleared by a success.
++    failures: u32,
++    /// Consecutive "MID is invalid" (-80009) answers. Cleared by a success.
++    invalid_mid: u32,
++    /// Apple keeps rejecting this machine's identity; automatic refreshes
++    /// stay off until a manual login succeeds.
++    stuck: bool,
++}
++
++struct TokenRefreshBackoffCell {
++    state: TokenRefreshBackoff,
++    path: Option<std::path::PathBuf>,
++    loaded: bool,
++}
++
++static TOKEN_REFRESH_BACKOFF: std::sync::Mutex<TokenRefreshBackoffCell> = std::sync::Mutex::new(TokenRefreshBackoffCell {
++    state: TokenRefreshBackoff { next_allowed_ms: 0, failures: 0, invalid_mid: 0, stuck: false },
++    path: None,
++    loaded: false,
++});
++/// Serializes automatic refreshes across every account in the process, so
++/// concurrent callers queue behind one login and then see its outcome
++/// through the breaker instead of each starting their own.
++static TOKEN_REFRESH_FLIGHT: Mutex<()> = Mutex::const_new(());
++const TOKEN_REFRESH_BACKOFF_MIN_SECS: u64 = 120;
++const TOKEN_REFRESH_BACKOFF_MAX_SECS: u64 = 3600;
++/// This many consecutive "MID is invalid" answers mean Apple has rejected
++/// the machine identity itself; retrying hourly forever only draws attention.
++const TOKEN_REFRESH_INVALID_MID_LIMIT: u32 = 3;
++
++fn token_refresh_now_ms() -> u64 {
++    SystemTime::now()
++        .duration_since(SystemTime::UNIX_EPOCH)
++        .map(|d| d.as_millis() as u64)
++        .unwrap_or(0)
++}
++
++fn token_refresh_cell() -> std::sync::MutexGuard<'static, TokenRefreshBackoffCell> {
++    let mut cell = TOKEN_REFRESH_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
++    if !cell.loaded {
++        cell.loaded = true;
++        if let Some(path) = cell.path.clone() {
++            if let Ok(data) = std::fs::read(&path) {
++                if let Ok(state) = serde_json::from_slice::<TokenRefreshBackoff>(&data) {
++                    cell.state = state;
++                }
++            }
++        }
++    }
++    cell
++}
++
++fn token_refresh_save(cell: &TokenRefreshBackoffCell) {
++    if let Some(path) = &cell.path {
++        if let Ok(data) = serde_json::to_vec(&cell.state) {
++            if let Some(dir) = path.parent() {
++                let _ = std::fs::create_dir_all(dir);
++            }
++            if let Err(e) = std::fs::write(path, data) {
++                warn!("Could not save the login backoff state to {}: {}", path.display(), e);
++            }
++        }
++    }
++}
++
++/// Where the breaker keeps its state between runs. Call once at startup,
++/// before any token is requested. Loads whatever the file holds.
++pub fn set_token_refresh_backoff_path(path: std::path::PathBuf) {
++    let mut cell = TOKEN_REFRESH_BACKOFF.lock().unwrap_or_else(|e| e.into_inner());
++    cell.path = Some(path);
++    cell.loaded = false;
++}
++
++/// How much longer automatic token refreshes are suspended, or None when a
++/// refresh may be attempted. A stuck breaker reports a very long wait.
++pub fn token_refresh_backoff_remaining() -> Option<Duration> {
++    let cell = token_refresh_cell();
++    if cell.state.stuck {
++        return Some(Duration::from_secs(u64::MAX / 4));
++    }
++    let now = token_refresh_now_ms();
++    if now < cell.state.next_allowed_ms {
++        Some(Duration::from_millis(cell.state.next_allowed_ms - now))
++    } else {
++        None
++    }
++}
++
++/// True once repeated "MID is invalid" answers have disabled automatic
++/// refreshes. Only a successful manual login (note_token_refresh(true))
++/// clears it.
++pub fn token_refresh_stuck() -> bool {
++    token_refresh_cell().state.stuck
++}
++
++/// Record the outcome of a login. A success clears the breaker entirely;
++/// a failure doubles the wait, from two minutes up to an hour.
++pub fn note_token_refresh(ok: bool) {
++    if ok {
++        let mut cell = token_refresh_cell();
++        let was_stuck = cell.state.stuck;
++        cell.state = TokenRefreshBackoff::default();
++        token_refresh_save(&cell);
++        if was_stuck {
++            info!("Login succeeded; automatic token refreshes are enabled again");
++        }
++        return;
++    }
++    note_token_refresh_failure(false);
++}
++
++/// Record a failed login from its error, so "MID is invalid" is counted
++/// toward the hard stop.
++pub fn note_token_refresh_error(err: &Error) {
++    note_token_refresh_failure(matches!(err, Error::AuthSrpWithMessage(-80009, _)));
++}
++
++fn note_token_refresh_failure(invalid_mid: bool) {
++    let mut cell = token_refresh_cell();
++    let failures = cell.state.failures.saturating_add(1);
++    let secs = (TOKEN_REFRESH_BACKOFF_MIN_SECS << (failures - 1).min(16)).min(TOKEN_REFRESH_BACKOFF_MAX_SECS);
++    cell.state.failures = failures;
++    cell.state.next_allowed_ms = token_refresh_now_ms() + secs * 1000;
++    if invalid_mid {
++        cell.state.invalid_mid = cell.state.invalid_mid.saturating_add(1);
++    } else {
++        cell.state.invalid_mid = 0;
++    }
++    if cell.state.invalid_mid >= TOKEN_REFRESH_INVALID_MID_LIMIT {
++        cell.state.stuck = true;
++        error!(
++            "Apple rejected this machine's identity (\"MID is invalid\") {} times in a row; \
++             automatic login is disabled until a manual re-login succeeds (run `corten-matrix login`)",
++            cell.state.invalid_mid
++        );
++    } else {
++        warn!("Token refresh (Apple login) failed {failures} time(s) in a row; not retrying for {secs}s");
++    }
++    token_refresh_save(&cell);
++}
++
+ impl<T: AnisetteProvider> AppleAccount<T> {
+ 
+     pub fn new_with_anisette(client_info: LoginClientInfo, anisette:  ArcAnisetteClient<T>, persisted: Option<PersistAccountData>, update_persist: Box<dyn FnMut(&PersistAccountData) + Send + Sync>) -> Result<Self, crate::Error> {
+@@ -427,13 +578,38 @@ impl<T: AnisetteProvider> AppleAccount<T> {
+             false
+         };
+         if !has_valid_token {
++            // A refresh is a full GSA SRP login. Every caller that finds its
++            // token expired would otherwise start one, so twenty CloudKit and
++            // profile fetches at startup became twenty logins in three
++            // seconds, which Apple answers with "MID is invalid" and then an
++            // HTML error page. After a failure nobody retries until the
++            // breaker's window has passed.
++            // One refresh at a time, process-wide: whoever queued behind a
++            // failed login finds the breaker set when its turn comes.
++            let _flight = TOKEN_REFRESH_FLIGHT.lock().await;
++            if let Some(remaining) = token_refresh_backoff_remaining() {
++                if token_refresh_stuck() {
++                    warn!("Not refreshing tokens: automatic login is disabled until a manual re-login");
++                } else {
++                    warn!("Not refreshing tokens: backing off for {}s more after earlier login failures", remaining.as_secs());
++                }
++                return None
++            }
+             // we've elapsed, get new tokens...
+             let username = persisted.username.clone();
+             let hashed_password = persisted.hashed_password.clone();
+             match self.login_email_pass(&username, hashed_password.as_ref()).await {
+-                Ok(LoginState::LoggedIn) => {},
+-                _err => {
+-                    error!("Failed to refresh tokens, state {_err:?}");
++                Ok(LoginState::LoggedIn) => {
++                    note_token_refresh(true);
++                },
++                Err(err) => {
++                    error!("Failed to refresh tokens, state Err({err:?})");
++                    note_token_refresh_error(&err);
++                    return None
++                }
++                other => {
++                    error!("Failed to refresh tokens, state {other:?}");
++                    note_token_refresh(false);
+                     return None
+                 }
+             }
+diff --git a/icloud-auth/src/lib.rs b/icloud-auth/src/lib.rs
+index 8a8f81f..d484320 100644
+--- a/icloud-auth/src/lib.rs
++++ b/icloud-auth/src/lib.rs
+@@ -1,5 +1,6 @@
+ pub mod anisette;
+ mod client;
++pub use client::{note_token_refresh, note_token_refresh_error, set_token_refresh_backoff_path, token_refresh_backoff_remaining, token_refresh_stuck};
+ use std::fmt::Display;
+ 
+ pub use client::{AppleAccount, PersistAccountData, FetchedToken, LoginState, TrustedPhoneNumber, AuthenticationExtras, VerifyBody, CircleSendMessage, GenerateVerificationTokenRequest};

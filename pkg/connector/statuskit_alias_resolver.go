@@ -517,6 +517,12 @@ func (c *IMClient) resolveStatusPortalViaIDSCached(ctx context.Context, log zero
 	if portal := c.lookupAliasPortal(ctx, canonical); portal != nil {
 		return portal
 	}
+	// Presence resolution is the most optional IDS traffic there is: it
+	// waits out the whole backoff window when Apple is throttling lookups.
+	if c.idsThrottledForStatusKit(ctx) {
+		log.Debug().Str("user", canonical).Msg("StatusKit alias-resolver: IDS lookups paused by the limiter, skipping")
+		return nil
+	}
 	attemptKey := database.Key(statusKitIDSAttemptKeyPrefix + canonical)
 	if raw := c.Main.Bridge.DB.KV.Get(ctx, attemptKey); raw != "" {
 		if attemptedAt, err := time.Parse(time.RFC3339, raw); err == nil {
@@ -604,6 +610,10 @@ func (c *IMClient) batchResolveHandlesSafe(unknowns, knownHandles []string) (res
 
 func (c *IMClient) batchLinkStatusKitAliases(ctx context.Context, log zerolog.Logger) {
 	if c.client == nil {
+		return
+	}
+	if c.idsThrottledForStatusKit(ctx) {
+		log.Info().Msg("StatusKit alias-resolver: batch link pass — IDS lookups paused by the limiter, skipping")
 		return
 	}
 	sk, err := c.client.GetStatuskitClient()

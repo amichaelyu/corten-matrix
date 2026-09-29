@@ -60,14 +60,15 @@ fn bridge_default_provider(
     path: PathBuf,
     device_id: String,
 ) -> omnisette::ArcAnisetteClient<BridgeDefaultAnisetteProvider> {
-    // The omnisette provider selected with `cleanroom-registration` takes a
-    // `device_id`; upstream OpenBubbles omnisette's `default_provider` is 2-arg.
-    // Gate on the feature so both signatures build: with cleanroom-registration
-    // the 3-arg call is used; without it (this from-source build) the 2-arg
-    // upstream signature is used.
+    // The pinned public upstream provider accepts login info and its state
+    // path in every feature shape used by this source build.
+    // Keep device_id at the wrapper boundary for callers while using that
+    // two-argument API.
+    // Both cfg arms intentionally use the same public signature.
     #[cfg(feature = "cleanroom-registration")]
     {
-        omnisette::default_provider(info, path, device_id)
+        let _ = device_id; // pinned public provider is two-argument
+        omnisette::default_provider(info, path)
     }
     #[cfg(not(feature = "cleanroom-registration"))]
     {
@@ -1051,6 +1052,11 @@ pub enum WrappedError {
     // visible failure back into a checkmark for a message nothing delivered.
     #[error("no device on this account forwards text messages")]
     NoSmsRelay,
+    // The send found no iMessage identity for any recipient and the
+    // conversation opted out of the SMS fallback (WrappedConversation::
+    // no_sms_fallback). Matched in Go by errors.Is, like NoSmsRelay.
+    #[error("no iMessage identity for the recipient")]
+    NoValidTargets,
 }
 
 impl From<rustpush::PushError> for WrappedError {
@@ -1701,6 +1707,16 @@ async fn refresh_pet_with_snapshot(
     hashed_password: &[u8],
     context: &str,
 ) -> bool {
+    // Same breaker as AppleAccount::get_token's automatic refresh: after a
+    // failed login nobody in the process retries until the window passes.
+    if let Some(remaining) = icloud_auth::token_refresh_backoff_remaining() {
+        warn!(
+            "{}: skipping PET refresh; Apple login backoff active for {}s more after earlier failures",
+            context,
+            remaining.as_secs()
+        );
+        return false;
+    }
     let snapshot = account.persisted.as_mut()
         .map(|persisted| std::mem::take(&mut persisted.tokens))
         .unwrap_or_default();
@@ -1712,6 +1728,7 @@ async fn refresh_pet_with_snapshot(
     let refreshed = match account.login_email_pass(username, hashed_password).await {
         Ok(icloud_auth::LoginState::LoggedIn) => {
             info!("{}: proactive PET refresh succeeded", context);
+            icloud_auth::note_token_refresh(true);
             fresh_pet(account)
         }
         Ok(state) => {
@@ -1720,17 +1737,20 @@ async fn refresh_pet_with_snapshot(
                     "{}: PET refresh returned {:?} but PET was populated — treating as success",
                     context, state
                 );
+                icloud_auth::note_token_refresh(true);
                 true
             } else {
                 warn!(
                     "{}: proactive PET refresh returned non-logged-in state: {:?} — manual re-login may be required",
                     context, state
                 );
+                icloud_auth::note_token_refresh(false);
                 false
             }
         }
         Err(err) => {
             warn!("{}: proactive PET refresh failed (non-fatal): {}", context, err);
+            icloud_auth::note_token_refresh_error(&err);
             false
         }
     };
@@ -1741,6 +1761,10 @@ async fn refresh_pet_with_snapshot(
     }
     refreshed
 }
+
+/// Where the login breaker keeps its state between runs: next to the other
+/// per-account state files, relative to the data directory the bridge runs in.
+const LOGIN_BACKOFF_PATH: &str = "state/login_backoff.json";
 
 /// The login credentials rustpush keeps on the account after a successful SRP
 /// exchange (`login_email_pass`) or that `restore_token_provider` seeded: the
@@ -2595,6 +2619,10 @@ pub async fn restore_token_provider(
         .map_err(|e| WrappedError::GenericError { msg: format!("Failed to create account: {}", e) })?;
 
     let account = Arc::new(rustpush::DebugMutex::new(account));
+    icloud_auth::set_token_refresh_backoff_path(LOGIN_BACKOFF_PATH.into());
+    if icloud_auth::token_refresh_stuck() {
+        warn!("Automatic Apple login is disabled from a previous run (repeated \"MID is invalid\"); run `corten-matrix login` to re-enable it");
+    }
     // Without a persisted delegate state rustpush starts empty and refreshes
     // the MobileMe delegate on first use, exactly as before.
     let token_provider = TokenProvider::new(
@@ -2921,12 +2949,75 @@ pub struct WrappedLetMeInRequest {
     pub usage: Option<String>,
 }
 
+/// Per-handle answer from `lookup_targets`.
+#[derive(uniffi::Record, Debug, Clone)]
+pub struct IdsLookupOutcome {
+    pub handle: String,
+    /// 0 = unknown (no cached answer within its TTL), 1 = available (fresh
+    /// keys), 2 = unavailable (a fresh empty answer). Mirrors the IDStatus
+    /// values Apple's identityservicesd stores per handle.
+    pub status: u8,
+    /// True when the cache still holds keys inside Apple's hard expiry, even
+    /// if they are past the soft refresh interval. A send can still use them.
+    pub usable: bool,
+    /// Apple's soft TTL for the cached keys (session-token-refresh-seconds),
+    /// 0 when there are none.
+    pub refresh_secs: u64,
+}
+
+/// Result of `lookup_targets`.
+#[derive(uniffi::Record, Debug, Clone, Default)]
+pub struct IdsLookupReport {
+    pub outcomes: Vec<IdsLookupOutcome>,
+    /// True when at least one handle had to be asked of Apple.
+    pub queried: bool,
+    /// The lookup error, if the query failed. Cache-only calls never set it.
+    pub error: Option<String>,
+    /// IDS status code parsed out of `error` (6005, 6009, ...), 0 when none.
+    pub error_code: u64,
+}
+
+/// Pull the numeric IDS status out of a formatted lookup error. rustpush
+/// renders known codes as "... (6005)" and the rest as "Unknown IDS error N".
+fn parse_ids_error_code(err: &str) -> u64 {
+    if let Some(rest) = err.split("Unknown IDS error ").nth(1) {
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(code) = digits.parse() {
+            return code;
+        }
+    }
+    let mut best = 0u64;
+    let mut i = 0;
+    let bytes = err.as_bytes();
+    while let Some(off) = err[i..].find('(') {
+        let start = i + off + 1;
+        let digits: String = err[start..].chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty()
+            && bytes.get(start + digits.len()) == Some(&b')')
+            && (4..=5).contains(&digits.len())
+        {
+            if let Ok(code) = digits.parse::<u64>() {
+                best = code;
+            }
+        }
+        i = start;
+    }
+    best
+}
+
 #[derive(uniffi::Record, Clone)]
 pub struct WrappedConversation {
     pub participants: Vec<String>,
     pub group_name: Option<String>,
     pub sender_guid: Option<String>,
     pub is_sms: bool,
+    /// When set, a send that finds no iMessage identity for the recipients
+    /// fails with `WrappedError::NoValidTargets` instead of being resent over
+    /// the SMS relay. The Go side sets it for recipients it knows are on
+    /// iMessage (an email handle, or a chat with iMessage history): for those
+    /// an empty IDS answer means Apple is throttling lookups, not that the
+    /// contact left iMessage, and a text-message fallback would be wrong.
+    pub no_sms_fallback: bool,
 }
 
 impl From<&ConversationData> for WrappedConversation {
@@ -2936,6 +3027,7 @@ impl From<&ConversationData> for WrappedConversation {
             group_name: c.cv_name.clone(),
             sender_guid: c.sender_guid.clone(),
             is_sms: false,
+            no_sms_fallback: false,
         }
     }
 }
@@ -5386,6 +5478,10 @@ pub async fn login_start(
     let needs_2fa = match result {
         icloud_auth::LoginState::LoggedIn => {
             info!("Login completed without 2FA");
+            // A manual login succeeded: clear any login backoff, including a
+            // hard stop from repeated "MID is invalid".
+            icloud_auth::set_token_refresh_backoff_path(LOGIN_BACKOFF_PATH.into());
+            icloud_auth::note_token_refresh(true);
             false
         }
         icloud_auth::LoginState::Needs2FAVerification => {
@@ -5476,7 +5572,11 @@ impl LoginSession {
         // on NeedsLogin). The hand-rolled flow was mapping NeedsLogin -> Ok(false),
         // surfacing as "2FA verification failed — invalid code" on a perfectly valid code.
         match result {
-            icloud_auth::LoginState::LoggedIn => Ok(true),
+            icloud_auth::LoginState::LoggedIn => {
+                icloud_auth::set_token_refresh_backoff_path(LOGIN_BACKOFF_PATH.into());
+                icloud_auth::note_token_refresh(true);
+                Ok(true)
+            }
             icloud_auth::LoginState::NeedsExtraStep(_) => {
                 Ok(account.get_pet().is_some())
             }
@@ -5490,7 +5590,12 @@ impl LoginSession {
                 let relogin = account.login_email_pass(&username, &hashed).await
                     .map_err(|e| WrappedError::GenericError { msg: format!("Post-2FA re-login failed: {}", e) })?;
                 info!("Post-2FA re-login returned: {:?}; PET available: {}", relogin, account.get_pet().is_some());
-                Ok(matches!(relogin, icloud_auth::LoginState::LoggedIn) || account.get_pet().is_some())
+                let ok = matches!(relogin, icloud_auth::LoginState::LoggedIn) || account.get_pet().is_some();
+                if ok {
+                    icloud_auth::set_token_refresh_backoff_path(LOGIN_BACKOFF_PATH.into());
+                    icloud_auth::note_token_refresh(true);
+                }
+                Ok(ok)
             }
             _ => Ok(false),
         }
@@ -9389,6 +9494,101 @@ impl Client {
         true
     }
 
+    /// Answer "is this handle on iMessage" for each target the way the send
+    /// path will see it, and say whether the answer came from the identity
+    /// cache or from Apple.
+    ///
+    /// This is the seam the Go-side lookup limiter (idskeys.go) drives. It
+    /// reports the cache state per handle in the terms Apple's own client uses
+    /// (available / unavailable / unknown, plus "stale but still usable"), so
+    /// the limiter can decide on its own whether a send may proceed, must
+    /// wait, or must fail, and can count exactly which calls went to Apple.
+    ///
+    /// `allow_network=false` never queries: it only reads the cache. With
+    /// `allow_network=true`, only handles whose cache entry is missing or past
+    /// its soft TTL are queried, in one batched call, so a fresh answer costs
+    /// nothing against Apple's lookup budget. `for_send` selects the
+    /// `x-required-for-message` query options the send path uses, so the
+    /// query that precedes a send is the same query the send would have made.
+    ///
+    /// Quarantine BYPASSED for the same reason validate_targets bypasses it:
+    /// this backs the outbound path, where a suppressed handle reads as "not
+    /// on iMessage".
+    pub async fn lookup_targets(
+        &self,
+        targets: Vec<String>,
+        handle: String,
+        allow_network: bool,
+        for_send: bool,
+    ) -> IdsLookupReport {
+        const SERVICE: &str = "com.apple.madrid";
+        let mut report = IdsLookupReport::default();
+        if targets.is_empty() {
+            return report;
+        }
+
+        let stale: Vec<String> = {
+            let cache = self.client.identity.cache.lock().await;
+            targets
+                .iter()
+                .filter(|t| !cache.does_not_need_refresh(SERVICE, &handle, t, false))
+                .cloned()
+                .collect()
+        };
+
+        if !stale.is_empty() && allow_network {
+            report.queried = true;
+            let options = if for_send {
+                rustpush::ids::user::QueryOptions { required_for_message: true, result_expected: true }
+            } else {
+                rustpush::ids::user::QueryOptions::default()
+            };
+            let guard = ids_guard::guarded_cache_keys(
+                &self.client.identity,
+                SERVICE,
+                &stale,
+                &handle,
+                false,
+                &options,
+                30,
+                ids_guard::QuarantinePolicy::Bypass,
+            ).await;
+            if let Some(err) = guard.error {
+                info!("lookup_targets: cache_keys(n={}) failed: {}", stale.len(), err);
+                report.error_code = parse_ids_error_code(&err);
+                report.error = Some(err);
+            } else if !guard.poisoned.is_empty() {
+                let msg = format!("lookup panicked for {} handle(s)", guard.poisoned.len());
+                info!("lookup_targets: {}", msg);
+                report.error = Some(msg);
+            }
+        }
+
+        let cache = self.client.identity.cache.lock().await;
+        for target in &targets {
+            let fresh = cache.does_not_need_refresh(SERVICE, &handle, target, false);
+            let keys = cache.get_keys(SERVICE, &handle, target);
+            let usable = !keys.is_empty();
+            let refresh_secs = keys
+                .iter()
+                .map(|k| k.session_token_refresh_seconds)
+                .min()
+                .unwrap_or(0);
+            let status = match (fresh, usable) {
+                (true, true) => 1,
+                (true, false) => 2,
+                _ => 0,
+            };
+            report.outcomes.push(IdsLookupOutcome {
+                handle: target.clone(),
+                status,
+                usable,
+                refresh_secs,
+            });
+        }
+        report
+    }
+
     pub async fn validate_targets(
         &self,
         targets: Vec<String>,
@@ -9553,6 +9753,9 @@ impl Client {
         );
         match self.send_with_flap_retry(&mut msg).await {
             Ok(_) => Ok(msg.id.clone()),
+            Err(rustpush::PushError::NoValidTargets) if conversation.no_sms_fallback => {
+                Err(WrappedError::NoValidTargets)
+            }
             Err(rustpush::PushError::NoValidTargets) if !conversation.is_sms => {
                 // iMessage failed — no IDS targets. Falling back to SMS is what an
                 // iPhone does, but it only delivers if a device on this account
@@ -10334,6 +10537,9 @@ impl Client {
         );
         match self.send_with_flap_retry(&mut msg).await {
             Ok(_) => Ok(msg.id.clone()),
+            Err(rustpush::PushError::NoValidTargets) if conversation.no_sms_fallback => {
+                Err(WrappedError::NoValidTargets)
+            }
             Err(rustpush::PushError::NoValidTargets) if !conversation.is_sms => {
                 // See send_message: an SMS fallback with no relay on the account is
                 // accepted by Apple and discarded, so fail rather than report Ok.

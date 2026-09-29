@@ -779,6 +779,15 @@ func uniffiCheckChecksums() {
 	}
 	{
 		checksum := rustCall(func(uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_rustpushgo_checksum_method_client_lookup_targets(uniffiStatus)
+		})
+		if checksum != 40121 {
+			// If this happens try cleaning and rebuilding your project
+			panic("rustpushgo: uniffi_rustpushgo_checksum_method_client_lookup_targets: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(uniffiStatus *C.RustCallStatus) C.uint16_t {
 			return C.uniffi_rustpushgo_checksum_method_client_purge_recoverable_zones(uniffiStatus)
 		})
 		if checksum != 38295 {
@@ -1795,6 +1804,30 @@ func uniffiCheckChecksums() {
 		}
 	}
 }
+
+type FfiConverterUint8 struct{}
+
+var FfiConverterUint8INSTANCE = FfiConverterUint8{}
+
+func (FfiConverterUint8) Lower(value uint8) C.uint8_t {
+	return C.uint8_t(value)
+}
+
+func (FfiConverterUint8) Write(writer io.Writer, value uint8) {
+	writeUint8(writer, value)
+}
+
+func (FfiConverterUint8) Lift(value C.uint8_t) uint8 {
+	return uint8(value)
+}
+
+func (FfiConverterUint8) Read(reader io.Reader) uint8 {
+	return readUint8(reader)
+}
+
+type FfiDestroyerUint8 struct{}
+
+func (FfiDestroyerUint8) Destroy(_ uint8) {}
 
 type FfiConverterUint32 struct{}
 
@@ -2901,6 +2934,30 @@ func (_self *Client) ListRecoverableMessageGuids() ([]string, error) {
 			return rustBufferFromC(C.ffi_rustpushgo_rust_future_complete_rust_buffer(unsafe.Pointer(handle), status))
 		},
 		FfiConverterSequenceStringINSTANCE.Lift, func(rustFuture *C.void, status *C.RustCallStatus) {
+			// freeFunc
+			C.ffi_rustpushgo_rust_future_free_rust_buffer(unsafe.Pointer(rustFuture), status)
+		})
+}
+
+func (_self *Client) LookupTargets(targets []string, handle string, allowNetwork bool, forSend bool) IdsLookupReport {
+	_pointer := _self.ffiObject.incrementPointer("*Client")
+	defer _self.ffiObject.decrementPointer()
+	return uniffiRustCallAsyncWithResult(func(status *C.RustCallStatus) *C.void {
+		// rustFutureFunc
+		return (*C.void)(C.uniffi_rustpushgo_fn_method_client_lookup_targets(
+			_pointer, rustBufferToC(FfiConverterSequenceStringINSTANCE.Lower(targets)), rustBufferToC(FfiConverterStringINSTANCE.Lower(handle)), FfiConverterBoolINSTANCE.Lower(allowNetwork), FfiConverterBoolINSTANCE.Lower(forSend),
+			status,
+		))
+	},
+		func(handle *C.void, ptr unsafe.Pointer, status *C.RustCallStatus) {
+			// pollFunc
+			C.ffi_rustpushgo_rust_future_poll_rust_buffer(unsafe.Pointer(handle), ptr, status)
+		},
+		func(handle *C.void, status *C.RustCallStatus) RustBufferI {
+			// completeFunc
+			return rustBufferFromC(C.ffi_rustpushgo_rust_future_complete_rust_buffer(unsafe.Pointer(handle), status))
+		},
+		FfiConverterTypeIdsLookupReportINSTANCE.Lift, func(rustFuture *C.void, status *C.RustCallStatus) {
 			// freeFunc
 			C.ffi_rustpushgo_rust_future_free_rust_buffer(unsafe.Pointer(rustFuture), status)
 		})
@@ -6060,6 +6117,102 @@ func (_ FfiDestroyerTypeIdsUsersWithIdentityRecord) Destroy(value IdsUsersWithId
 	value.Destroy()
 }
 
+type IdsLookupOutcome struct {
+	Handle      string
+	Status      uint8
+	Usable      bool
+	RefreshSecs uint64
+}
+
+func (r *IdsLookupOutcome) Destroy() {
+	FfiDestroyerString{}.Destroy(r.Handle)
+	FfiDestroyerUint8{}.Destroy(r.Status)
+	FfiDestroyerBool{}.Destroy(r.Usable)
+	FfiDestroyerUint64{}.Destroy(r.RefreshSecs)
+}
+
+type FfiConverterTypeIdsLookupOutcome struct{}
+
+var FfiConverterTypeIdsLookupOutcomeINSTANCE = FfiConverterTypeIdsLookupOutcome{}
+
+func (c FfiConverterTypeIdsLookupOutcome) Lift(rb RustBufferI) IdsLookupOutcome {
+	return LiftFromRustBuffer[IdsLookupOutcome](c, rb)
+}
+
+func (c FfiConverterTypeIdsLookupOutcome) Read(reader io.Reader) IdsLookupOutcome {
+	return IdsLookupOutcome{
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterUint8INSTANCE.Read(reader),
+		FfiConverterBoolINSTANCE.Read(reader),
+		FfiConverterUint64INSTANCE.Read(reader),
+	}
+}
+
+func (c FfiConverterTypeIdsLookupOutcome) Lower(value IdsLookupOutcome) RustBuffer {
+	return LowerIntoRustBuffer[IdsLookupOutcome](c, value)
+}
+
+func (c FfiConverterTypeIdsLookupOutcome) Write(writer io.Writer, value IdsLookupOutcome) {
+	FfiConverterStringINSTANCE.Write(writer, value.Handle)
+	FfiConverterUint8INSTANCE.Write(writer, value.Status)
+	FfiConverterBoolINSTANCE.Write(writer, value.Usable)
+	FfiConverterUint64INSTANCE.Write(writer, value.RefreshSecs)
+}
+
+type FfiDestroyerTypeIdsLookupOutcome struct{}
+
+func (_ FfiDestroyerTypeIdsLookupOutcome) Destroy(value IdsLookupOutcome) {
+	value.Destroy()
+}
+
+type IdsLookupReport struct {
+	Outcomes  []IdsLookupOutcome
+	Queried   bool
+	Error     *string
+	ErrorCode uint64
+}
+
+func (r *IdsLookupReport) Destroy() {
+	FfiDestroyerSequenceTypeIdsLookupOutcome{}.Destroy(r.Outcomes)
+	FfiDestroyerBool{}.Destroy(r.Queried)
+	FfiDestroyerOptionalString{}.Destroy(r.Error)
+	FfiDestroyerUint64{}.Destroy(r.ErrorCode)
+}
+
+type FfiConverterTypeIdsLookupReport struct{}
+
+var FfiConverterTypeIdsLookupReportINSTANCE = FfiConverterTypeIdsLookupReport{}
+
+func (c FfiConverterTypeIdsLookupReport) Lift(rb RustBufferI) IdsLookupReport {
+	return LiftFromRustBuffer[IdsLookupReport](c, rb)
+}
+
+func (c FfiConverterTypeIdsLookupReport) Read(reader io.Reader) IdsLookupReport {
+	return IdsLookupReport{
+		FfiConverterSequenceTypeIdsLookupOutcomeINSTANCE.Read(reader),
+		FfiConverterBoolINSTANCE.Read(reader),
+		FfiConverterOptionalStringINSTANCE.Read(reader),
+		FfiConverterUint64INSTANCE.Read(reader),
+	}
+}
+
+func (c FfiConverterTypeIdsLookupReport) Lower(value IdsLookupReport) RustBuffer {
+	return LowerIntoRustBuffer[IdsLookupReport](c, value)
+}
+
+func (c FfiConverterTypeIdsLookupReport) Write(writer io.Writer, value IdsLookupReport) {
+	FfiConverterSequenceTypeIdsLookupOutcomeINSTANCE.Write(writer, value.Outcomes)
+	FfiConverterBoolINSTANCE.Write(writer, value.Queried)
+	FfiConverterOptionalStringINSTANCE.Write(writer, value.Error)
+	FfiConverterUint64INSTANCE.Write(writer, value.ErrorCode)
+}
+
+type FfiDestroyerTypeIdsLookupReport struct{}
+
+func (_ FfiDestroyerTypeIdsLookupReport) Destroy(value IdsLookupReport) {
+	value.Destroy()
+}
+
 type SharedAlbumInfo struct {
 	Albumguid        string
 	Name             *string
@@ -6677,10 +6830,11 @@ func (_ FfiDestroyerTypeWrappedCloudSyncMessagesPage) Destroy(value WrappedCloud
 }
 
 type WrappedConversation struct {
-	Participants []string
-	GroupName    *string
-	SenderGuid   *string
-	IsSms        bool
+	Participants  []string
+	GroupName     *string
+	SenderGuid    *string
+	IsSms         bool
+	NoSmsFallback bool
 }
 
 func (r *WrappedConversation) Destroy() {
@@ -6688,6 +6842,7 @@ func (r *WrappedConversation) Destroy() {
 	FfiDestroyerOptionalString{}.Destroy(r.GroupName)
 	FfiDestroyerOptionalString{}.Destroy(r.SenderGuid)
 	FfiDestroyerBool{}.Destroy(r.IsSms)
+	FfiDestroyerBool{}.Destroy(r.NoSmsFallback)
 }
 
 type FfiConverterTypeWrappedConversation struct{}
@@ -6704,6 +6859,7 @@ func (c FfiConverterTypeWrappedConversation) Read(reader io.Reader) WrappedConve
 		FfiConverterOptionalStringINSTANCE.Read(reader),
 		FfiConverterOptionalStringINSTANCE.Read(reader),
 		FfiConverterBoolINSTANCE.Read(reader),
+		FfiConverterBoolINSTANCE.Read(reader),
 	}
 }
 
@@ -6716,6 +6872,7 @@ func (c FfiConverterTypeWrappedConversation) Write(writer io.Writer, value Wrapp
 	FfiConverterOptionalStringINSTANCE.Write(writer, value.GroupName)
 	FfiConverterOptionalStringINSTANCE.Write(writer, value.SenderGuid)
 	FfiConverterBoolINSTANCE.Write(writer, value.IsSms)
+	FfiConverterBoolINSTANCE.Write(writer, value.NoSmsFallback)
 }
 
 type FfiDestroyerTypeWrappedConversation struct{}
@@ -7472,6 +7629,7 @@ func (err WrappedError) Unwrap() error {
 var ErrWrappedErrorGenericError = fmt.Errorf("WrappedErrorGenericError")
 var ErrWrappedErrorNoStatusKitTargets = fmt.Errorf("WrappedErrorNoStatusKitTargets")
 var ErrWrappedErrorNoSmsRelay = fmt.Errorf("WrappedErrorNoSmsRelay")
+var ErrWrappedErrorNoValidTargets = fmt.Errorf("WrappedErrorNoValidTargets")
 
 // Variant structs
 type WrappedErrorGenericError struct {
@@ -7535,6 +7693,23 @@ func (self WrappedErrorNoSmsRelay) Is(target error) bool {
 	return target == ErrWrappedErrorNoSmsRelay
 }
 
+type WrappedErrorNoValidTargets struct {
+}
+
+func NewWrappedErrorNoValidTargets() *WrappedError {
+	return &WrappedError{
+		err: &WrappedErrorNoValidTargets{},
+	}
+}
+
+func (err WrappedErrorNoValidTargets) Error() string {
+	return fmt.Sprint("NoValidTargets")
+}
+
+func (self WrappedErrorNoValidTargets) Is(target error) bool {
+	return target == ErrWrappedErrorNoValidTargets
+}
+
 type FfiConverterTypeWrappedError struct{}
 
 var FfiConverterTypeWrappedErrorINSTANCE = FfiConverterTypeWrappedError{}
@@ -7559,6 +7734,8 @@ func (c FfiConverterTypeWrappedError) Read(reader io.Reader) *WrappedError {
 		return &WrappedError{&WrappedErrorNoStatusKitTargets{}}
 	case 3:
 		return &WrappedError{&WrappedErrorNoSmsRelay{}}
+	case 4:
+		return &WrappedError{&WrappedErrorNoValidTargets{}}
 	default:
 		panic(fmt.Sprintf("Unknown error code %d in FfiConverterTypeWrappedError.Read()", errorID))
 	}
@@ -7573,6 +7750,8 @@ func (c FfiConverterTypeWrappedError) Write(writer io.Writer, value *WrappedErro
 		writeInt32(writer, 2)
 	case *WrappedErrorNoSmsRelay:
 		writeInt32(writer, 3)
+	case *WrappedErrorNoValidTargets:
+		writeInt32(writer, 4)
 	default:
 		_ = variantValue
 		panic(fmt.Sprintf("invalid error value `%v` in FfiConverterTypeWrappedError.Write", value))
@@ -8430,6 +8609,49 @@ type FfiDestroyerSequenceTypeEscrowDeviceInfo struct{}
 func (FfiDestroyerSequenceTypeEscrowDeviceInfo) Destroy(sequence []EscrowDeviceInfo) {
 	for _, value := range sequence {
 		FfiDestroyerTypeEscrowDeviceInfo{}.Destroy(value)
+	}
+}
+
+type FfiConverterSequenceTypeIdsLookupOutcome struct{}
+
+var FfiConverterSequenceTypeIdsLookupOutcomeINSTANCE = FfiConverterSequenceTypeIdsLookupOutcome{}
+
+func (c FfiConverterSequenceTypeIdsLookupOutcome) Lift(rb RustBufferI) []IdsLookupOutcome {
+	return LiftFromRustBuffer[[]IdsLookupOutcome](c, rb)
+}
+
+func (c FfiConverterSequenceTypeIdsLookupOutcome) Read(reader io.Reader) []IdsLookupOutcome {
+	length := readInt32(reader)
+	if length == 0 {
+		return nil
+	}
+	result := make([]IdsLookupOutcome, 0, length)
+	for i := int32(0); i < length; i++ {
+		result = append(result, FfiConverterTypeIdsLookupOutcomeINSTANCE.Read(reader))
+	}
+	return result
+}
+
+func (c FfiConverterSequenceTypeIdsLookupOutcome) Lower(value []IdsLookupOutcome) RustBuffer {
+	return LowerIntoRustBuffer[[]IdsLookupOutcome](c, value)
+}
+
+func (c FfiConverterSequenceTypeIdsLookupOutcome) Write(writer io.Writer, value []IdsLookupOutcome) {
+	if len(value) > math.MaxInt32 {
+		panic("[]IdsLookupOutcome is too large to fit into Int32")
+	}
+
+	writeInt32(writer, int32(len(value)))
+	for _, item := range value {
+		FfiConverterTypeIdsLookupOutcomeINSTANCE.Write(writer, item)
+	}
+}
+
+type FfiDestroyerSequenceTypeIdsLookupOutcome struct{}
+
+func (FfiDestroyerSequenceTypeIdsLookupOutcome) Destroy(sequence []IdsLookupOutcome) {
+	for _, value := range sequence {
+		FfiDestroyerTypeIdsLookupOutcome{}.Destroy(value)
 	}
 }
 

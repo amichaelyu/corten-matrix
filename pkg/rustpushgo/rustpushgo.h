@@ -264,6 +264,15 @@ void* uniffi_rustpushgo_fn_method_client_list_recoverable_message_guids(
 	RustCallStatus* out_status
 );
 
+void* uniffi_rustpushgo_fn_method_client_lookup_targets(
+	void* ptr,
+	RustBuffer targets,
+	RustBuffer handle,
+	int8_t allow_network,
+	int8_t for_send,
+	RustCallStatus* out_status
+);
+
 void* uniffi_rustpushgo_fn_method_client_purge_recoverable_zones(
 	void* ptr,
 	RustCallStatus* out_status
@@ -1594,6 +1603,10 @@ uint16_t uniffi_rustpushgo_checksum_method_client_list_recoverable_chats(
 );
 
 uint16_t uniffi_rustpushgo_checksum_method_client_list_recoverable_message_guids(
+	RustCallStatus* out_status
+);
+
+uint16_t uniffi_rustpushgo_checksum_method_client_lookup_targets(
 	RustCallStatus* out_status
 );
 

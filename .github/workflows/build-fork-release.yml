@@ -1,0 +1,181 @@
+name: Build fork release
+
+# Public source build for this fork's own releases, which `corten-matrix
+# update` follows (pkg/connector/selfupdate.go). Everything here is built from
+# the checked-in sources plus the pinned OpenBubbles/rustpush checkout that
+# `make` clones; no private repository or deploy key is involved.
+#
+# Start it from the Actions tab (workflow_dispatch) or push a version tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (MAJOR.MINOR.PATCH). Leave empty to bump the patch number of the latest release.
+        required: false
+        type: string
+      prerelease:
+        description: Mark the release as a pre-release
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve release tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+            tag="${GITHUB_REF_NAME#v}"
+          elif [ -n "${INPUT_VERSION:-}" ]; then
+            tag="${INPUT_VERSION#v}"
+          else
+            latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
+            if [ -z "$latest" ]; then
+              tag=1.0.0
+            else
+              tag="$(bash scripts/next-release-tag.sh "$latest" patch)"
+            fi
+          fi
+          if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be MAJOR.MINOR.PATCH, got '$tag'"
+            exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release $tag already exists"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Building release $tag"
+
+  macos-arm64:
+    name: macOS arm64
+    needs: version
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Go from go.mod
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version && cargo --version
+
+      - name: Cache Cargo registry
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'third_party/rustpush-upstream.sha') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Install build dependencies
+        run: brew install protobuf libheif tmux
+
+      - name: Build
+        env:
+          VERSION: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          make build VERSION="$VERSION"
+          ./corten-matrix --version
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp corten-matrix dist/corten-matrix-macos-arm64
+          test "$(lipo -archs dist/corten-matrix-macos-arm64)" = arm64
+          codesign --verify --verbose=2 dist/corten-matrix-macos-arm64
+          (cd dist && shasum -a 256 corten-matrix-macos-arm64 > corten-matrix-macos-arm64.sha256)
+          cat dist/corten-matrix-macos-arm64.sha256
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-arm64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish release
+    needs: [version, macos-arm64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+
+      - name: Assemble assets and checksums
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f -name 'corten-matrix-*' ! -name '*.sha256' -exec cp {} release/ \;
+          (cd release && shasum -a 256 corten-matrix-* > SHA256SUMS)
+          ls -la release
+          cat release/SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease == true && '--prerelease' || '' }}
+        run: |
+          set -euo pipefail
+          # Tag the built commit unless the run was started from a tag push.
+          if [ "${GITHUB_REF_TYPE:-}" != tag ]; then
+            target="--target $GITHUB_SHA"
+          else
+            target=""
+          fi
+          # shellcheck disable=SC2086
+          gh release create "$TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "corten-matrix $TAG" \
+            --generate-notes \
+            $PRERELEASE $target
+          echo "Published https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"

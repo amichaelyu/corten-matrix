@@ -66,7 +66,7 @@ func (c *IMClient) resolveContactPortalID(identifier string) networkid.PortalID 
 	return defaultID
 }
 
-// validateTargetsSafe wraps Client.ValidateTargets with a recover guard.
+// validateTargetsSafe wraps the limited ValidateTargets with a recover guard.
 // The call crosses into the identity-manager FFI path, which has reachable
 // panic sites upstream (identity_manager.rs:249/335/542/555); a panic must
 // not crash the bridge, so it degrades to "nothing validated" (nil). Shared
@@ -82,7 +82,7 @@ func (c *IMClient) validateTargetsSafe(targets []string) (valid []string) {
 			valid = nil
 		}
 	}()
-	return c.client.ValidateTargets(targets, c.handle)
+	return c.validateTargetsLimited(context.Background(), targets)
 }
 
 // resolveSendTarget determines the best identifier to send to for a DM portal.

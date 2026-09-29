@@ -313,6 +313,11 @@ type IMClient struct {
 	// session token expires, normally much longer).
 	sendPathIDSGate idsRateGate
 
+	// idsLimiterState is the IDS lookup limiter and status cache (idskeys.go),
+	// bound on first use by idsLimiter().
+	idsLimiterOnce  sync.Once
+	idsLimiterState *idsLookupLimiter
+
 	// sharedStreamAssetCache tracks the last observed asset GUID set per shared
 	// album for this session. The Shared Streams watcher uses it to suppress
 	// false-positive "new content" notices from Apple's getchanges endpoint,
@@ -1608,8 +1613,13 @@ func (c *IMClient) Connect(ctx context.Context) {
 			log.Warn().Msg("Local macOS contacts unavailable — contact names will not be resolved")
 		}
 	} else {
-		cloudContacts := newCloudContactsClient(c.client, log)
-		if cloudContacts != nil {
+		var cloudContacts *cloudContactsClient
+		if !c.Main.Config.DisableICloudContacts {
+			cloudContacts = newCloudContactsClient(c.client, log)
+		}
+		if c.Main.Config.DisableICloudContacts {
+			log.Info().Msg("iCloud contacts disabled before CardDAV setup")
+		} else if cloudContacts != nil {
 			c.contacts = cloudContacts
 			log.Info().Str("url_host", logSafeURL(cloudContacts.baseURL)).Msg("Cloud contacts available (iCloud CardDAV)")
 			if syncErr := cloudContacts.SyncContacts(log); syncErr != nil {
@@ -3015,6 +3025,12 @@ func (c *IMClient) OnMessage(msg rustpushgo.WrappedMessage) {
 		Str("component", "imessage").
 		Str("msg_uuid", msg.Uuid).
 		Logger()
+	// An inbound iMessage is proof its sender is on iMessage; remember it so
+	// the lookup limiter never spends a query (or mistakes a throttle for
+	// "not on iMessage") for this contact.
+	if msg.Sender != nil && *msg.Sender != "" && !msg.IsSms && !c.isMyHandle(*msg.Sender) {
+		c.idsLimiter().observeAvailable(context.Background(), *msg.Sender)
+	}
 	// Send delivery receipt if requested
 	if msg.SendDelivered && msg.Sender != nil && !msg.IsDelivered && !msg.IsReadReceipt {
 		go func() {
@@ -3027,7 +3043,16 @@ func (c *IMClient) OnMessage(msg rustpushgo.WrappedMessage) {
 			if c.client == nil {
 				return
 			}
+			// Delivery receipts are optional traffic: skipped under a throttle
+			// rather than re-querying the sender's identity.
+			if !c.allowOptionalIDS(context.Background(), conv.Participants) {
+				return
+			}
 			if err := c.client.SendDeliveryReceipt(conv, c.handle); err != nil {
+				if c.idsRecordSendFailure(context.Background(), conv, err) {
+					log.Warn().Err(err).Msg("Delivery receipt refused for lack of an iMessage identity; holding receipts to this sender")
+					return
+				}
 				log.Warn().Err(err).Msg("Failed to send delivery receipt")
 			}
 		}()
@@ -6274,6 +6299,9 @@ func (c *IMClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Matrix
 	}
 
 	conv := c.portalToConversation(msg.Portal)
+	// Carry the limiter's routing decision: no SMS fallback for a recipient
+	// known to be on iMessage, a direct text for one known not to be.
+	c.applyIdentityRouting(msg.Portal, &conv)
 
 	// A stale carrier flag would route this into the SMS relay, where a bridge
 	// with no forwarding device silently drops it. Override for THIS send only:
@@ -6332,6 +6360,11 @@ func (c *IMClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Matrix
 		// a bare wrapped error, which would reach the user with no message at all.
 		if errors.Is(err, rustpushgo.ErrWrappedErrorNoSmsRelay) {
 			return nil, errNoCarrierRoute
+		}
+		// The limiter marked this recipient as known-iMessage and rustpush found
+		// no identity anyway: a throttled lookup, held rather than texted.
+		if errors.Is(err, rustpushgo.ErrWrappedErrorNoValidTargets) {
+			return nil, c.idsNoIdentityError(ctx, conv)
 		}
 		return nil, fmt.Errorf("failed to send iMessage: %w", err)
 	}
@@ -6589,6 +6622,9 @@ func (c *IMClient) handleMatrixFile(ctx context.Context, msg *bridgev2.MatrixMes
 		if errors.Is(err, rustpushgo.ErrWrappedErrorNoSmsRelay) {
 			return nil, errNoCarrierRoute
 		}
+		if errors.Is(err, rustpushgo.ErrWrappedErrorNoValidTargets) {
+			return nil, c.idsNoIdentityError(ctx, conv)
+		}
 		return nil, fmt.Errorf("failed to send attachment: %w", err)
 	}
 	// Persist UUID immediately so echo detection works even if the portal
@@ -6711,9 +6747,19 @@ func (c *IMClient) HandleMatrixTyping(ctx context.Context, msg *bridgev2.MatrixT
 	if conv.IsSms {
 		return nil
 	}
-	return retrySendOnAPNsFlap(func() error {
+	// Typing is optional traffic: never a lookup under a throttle.
+	if !c.allowOptionalIDS(ctx, conv.Participants) {
+		return nil
+	}
+	err := retrySendOnAPNsFlap(func() error {
 		return c.client.SendTyping(conv, msg.IsTyping, c.handle)
 	})
+	if err != nil && c.idsRecordSendFailure(ctx, conv, err) {
+		zerolog.Ctx(ctx).Warn().Err(err).Str("portal_id", string(msg.Portal.ID)).
+			Msg("Typing notice refused for lack of an iMessage identity; holding typing to this chat")
+		return nil
+	}
+	return err
 }
 
 func (c *IMClient) HandleMatrixReadReceipt(ctx context.Context, receipt *bridgev2.MatrixReadReceipt) error {
@@ -6722,6 +6768,10 @@ func (c *IMClient) HandleMatrixReadReceipt(ctx context.Context, receipt *bridgev
 	}
 	conv := c.portalToConversation(receipt.Portal)
 	if conv.IsSms {
+		return nil
+	}
+	// Read receipts are optional traffic: never a lookup under a throttle.
+	if !c.allowOptionalIDS(ctx, conv.Participants) {
 		return nil
 	}
 	var forUuid *string
@@ -6737,6 +6787,11 @@ func (c *IMClient) HandleMatrixReadReceipt(ctx context.Context, receipt *bridgev
 		return c.client.SendReadReceipt(conv, c.handle, forUuid)
 	})
 	if err != nil {
+		if c.idsRecordSendFailure(ctx, conv, err) {
+			zerolog.Ctx(ctx).Warn().Err(err).Str("portal_id", string(receipt.Portal.ID)).
+				Msg("Read receipt refused for lack of an iMessage identity; holding receipts to this chat")
+			return nil
+		}
 		errStr := err.Error()
 		// Suppress non-actionable failures: IDS lookup errors (6001) for
 		// urn:biz: business chat portals and edge cases between restart and SMS
@@ -7982,8 +8037,11 @@ func (c *IMClient) ResolveIdentifier(ctx context.Context, identifier string, cre
 		}
 	}()
 
-	valid := c.client.ValidateTargets([]string{identifier}, c.handle)
+	valid := c.validateTargetsLimited(ctx, []string{identifier})
 	if len(valid) == 0 {
+		if c.idsLimiter().throttled(ctx) {
+			return nil, fmt.Errorf("iMessage lookups are paused because Apple is rate-limiting this account; try %s again later", identifier)
+		}
 		return nil, fmt.Errorf("user not found on iMessage: %s", identifier)
 	}
 
