@@ -3,6 +3,7 @@ package connector
 import (
 	"testing"
 
+	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 )
 
@@ -115,6 +116,29 @@ func TestGeneralCaps(t *testing.T) {
 	}
 	if !generalCaps.AggressiveUpdateInfo {
 		t.Error("AggressiveUpdateInfo should be true")
+	}
+}
+
+// Clients hide new-chat features the bridge doesn't advertise, so every
+// advertised flag must be backed by the interface that serves it.
+func TestGeneralCapsAdvertiseImplementedNewChatFeatures(t *testing.T) {
+	ri := generalCaps.Provisioning.ResolveIdentifier
+	var client any = (*IMClient)(nil)
+	_, resolves := client.(bridgev2.IdentifierResolvingNetworkAPI)
+	_, lists := client.(bridgev2.ContactListingNetworkAPI)
+	_, searches := client.(bridgev2.UserSearchingNetworkAPI)
+
+	if !resolves || !ri.CreateDM || !ri.LookupPhone || !ri.LookupEmail {
+		t.Errorf("identifier resolution: implemented=%v, advertised create_dm=%v lookup_phone=%v lookup_email=%v", resolves, ri.CreateDM, ri.LookupPhone, ri.LookupEmail)
+	}
+	if lists != ri.ContactList {
+		t.Errorf("contact_list advertised=%v but ContactListingNetworkAPI implemented=%v", ri.ContactList, lists)
+	}
+	if searches != ri.Search {
+		t.Errorf("search advertised=%v but UserSearchingNetworkAPI implemented=%v", ri.Search, searches)
+	}
+	if ri.AnyPhone {
+		t.Error("any_phone must stay false: handles are validated against IDS before a DM is created")
 	}
 }
 

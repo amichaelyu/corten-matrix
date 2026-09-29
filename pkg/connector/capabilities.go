@@ -106,6 +106,20 @@ func init() {
 var generalCaps = &bridgev2.NetworkGeneralCapabilities{
 	DisappearingMessages: false,
 	AggressiveUpdateInfo: true,
+	// Advertise the new-chat features the client implements. Clients read
+	// these from the provisioning capabilities endpoint and hide anything left
+	// false, so without them Beeper's new-chat screen never offered iMessage
+	// lookup or search. AnyPhone stays false: ResolveIdentifier validates every
+	// handle against IDS before a DM is created.
+	Provisioning: bridgev2.ProvisioningCapabilities{
+		ResolveIdentifier: bridgev2.ResolveIdentifierCapabilities{
+			CreateDM:    true,
+			LookupPhone: true,
+			LookupEmail: true,
+			ContactList: true,
+			Search:      true,
+		},
+	},
 }
 
 func (c *IMConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
