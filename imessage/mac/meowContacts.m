@@ -48,10 +48,20 @@ NSArray<CNContact*>* meowGetContactList(CNContactStore* store) {
 		CNContactGivenNameKey, CNContactFamilyNameKey, CNContactNicknameKey,
 		CNContactEmailAddressesKey, CNContactPhoneNumbersKey,
 	];
+	// Fetch across every container (iCloud, On My Mac, Exchange, ...), not just
+	// the default one: on a Mac synced with iCloud the default container is
+	// often the near-empty local "On My Mac" store, which hid the address book
+	// from bulk contact search. Results are unified, so linked cards from
+	// different accounts come back as one contact.
+	CNContactFetchRequest* request = [[[CNContactFetchRequest alloc] initWithKeysToFetch:keysToFetch] autorelease];
+	NSMutableArray<CNContact*>* contacts = [NSMutableArray array];
 	NSError* error;
-	NSString *containerId = store.defaultContainerIdentifier;
-	NSPredicate *predicate = [CNContact predicateForContactsInContainerWithIdentifier:containerId];
-	NSArray* contacts = [store unifiedContactsMatchingPredicate:predicate keysToFetch:keysToFetch error:&error];
+	BOOL ok = [store enumerateContactsWithFetchRequest:request error:&error usingBlock:^(CNContact* contact, BOOL* stop) {
+		[contacts addObject:contact];
+	}];
+	if (!ok) {
+		return NULL;
+	}
 	return contacts;
 }
 CNContact* meowGetContactArrayItem(NSArray<CNContact*>* arr, unsigned long i) { return [arr objectAtIndex:i]; }
