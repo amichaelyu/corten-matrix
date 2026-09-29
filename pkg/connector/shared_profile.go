@@ -384,7 +384,7 @@ func (c *IMClient) applyCachedSharedProfilesToGhosts(log zerolog.Logger) {
 // handleSharedProfile path and bypass this throttle, so profile changes
 // the peer iPhone announces are still applied immediately.
 func (c *IMClient) refreshAllSharedProfiles(log zerolog.Logger) {
-	if c.sharedProfileStore == nil || c.client == nil {
+	if c.Main.Config.DisableICloudContacts || c.sharedProfileStore == nil || c.client == nil {
 		return
 	}
 	rows, err := c.sharedProfileStore.loadAll(context.Background())
