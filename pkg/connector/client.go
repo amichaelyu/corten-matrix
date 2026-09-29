@@ -7964,6 +7964,11 @@ func (c *IMClient) ResolveIdentifier(ctx context.Context, identifier string, cre
 	if c.client == nil {
 		return nil, bridgev2.ErrNotLoggedIn
 	}
+	// Provisioning clients send bare handles ("+15551234567", "a@b.com"); the
+	// start-chat command normalizes before calling in. Normalize here too so
+	// IDS gets a prefixed handle and the portal ID matches the rest of the
+	// bridge's. Idempotent for already-prefixed identifiers.
+	identifier = normalizeStartChatIdentifier(identifier)
 	// ValidateTargets crosses into the identity-manager FFI path, which has
 	// reachable panic sites upstream (identity_manager.rs:249/335/542/555).
 	// This is a user-triggered call (start-chat flow), so a panic here

@@ -23,10 +23,12 @@ import (
 	"github.com/lrhodin/corten-matrix/imessage"
 )
 
-// SearchUsers finds contacts whose name matches query and returns the
-// identifiers that are reachable on iMessage. Like the `contacts` command it
-// validates at most maxContactValidate identifiers against IDS per query, so a
-// broad search can't hammer Apple — clients call this as the user types.
+// SearchUsers finds contacts whose name matches query. Clients call it as the
+// user types, so it makes no IDS lookups: validating every keystroke's matches
+// burns Apple's lookup budget (a new device is rate-limited hard) and, while
+// throttled, hides every contact. ResolveIdentifier validates the handle when
+// the user picks one. Results are capped at maxContactValidate, ranked like the
+// `contacts` command, and no ghost or portal rows are created for them.
 func (c *IMClient) SearchUsers(ctx context.Context, query string) ([]*bridgev2.ResolveIdentifierResponse, error) {
 	if c.client == nil {
 		return nil, bridgev2.ErrNotLoggedIn
@@ -39,41 +41,20 @@ func (c *IMClient) SearchUsers(ctx context.Context, query string) ([]*bridgev2.R
 	if len(candidates) > maxContactValidate {
 		candidates = candidates[:maxContactValidate]
 	}
-	if len(candidates) == 0 {
-		return nil, nil
-	}
-
-	ids := make([]string, len(candidates))
-	for i, cand := range candidates {
-		ids[i] = cand.identifier
-	}
-	validSet := make(map[string]bool, len(ids))
-	for _, v := range c.validateTargetsSafe(ids) {
-		validSet[v] = true
-	}
 
 	var results []*bridgev2.ResolveIdentifierResponse
 	for _, cand := range candidates {
-		if !validSet[cand.identifier] {
-			continue
-		}
-		userID := makeUserID(cand.identifier)
-		ghost, err := c.Main.Bridge.GetGhostByID(ctx, userID)
-		if err != nil {
-			return nil, err
-		}
-		userInfo, err := c.GetUserInfo(ctx, ghost)
-		if err != nil {
-			return nil, err
-		}
+		name := c.contactDisplayName(cand.contact, cand.identifier)
+		isBot := false
 		resp := &bridgev2.ResolveIdentifierResponse{
-			Ghost:    ghost,
-			UserID:   userID,
-			UserInfo: userInfo,
+			UserID: makeUserID(cand.identifier),
+			UserInfo: &bridgev2.UserInfo{
+				Name:        &name,
+				Identifiers: []string{cand.identifier},
+				IsBot:       &isBot,
+			},
 		}
-		// Surface an existing DM so the client can jump straight to it, but
-		// don't create portal rows for every search hit — the chat is created
-		// through ResolveIdentifier once the user actually picks someone.
+		// Surface an existing DM so the client can jump straight to it.
 		portalKey := networkid.PortalKey{ID: networkid.PortalID(cand.identifier), Receiver: c.UserLogin.ID}
 		if portal, err := c.Main.Bridge.GetExistingPortalByKey(ctx, portalKey); err != nil {
 			return nil, err
@@ -128,18 +109,7 @@ func (c *IMClient) contactListEntry(contact *imessage.Contact) *bridgev2.Resolve
 	}
 	primary := pickCanonicalHandle(ids)
 
-	var name string
-	if contact.HasName() {
-		name = c.Main.Config.FormatDisplayname(DisplaynameParams{
-			FirstName: contact.FirstName,
-			LastName:  contact.LastName,
-			Nickname:  contact.Nickname,
-			ID:        stripIdentifierPrefix(primary),
-		})
-	} else {
-		name = c.Main.Config.FormatDisplayname(identifierToDisplaynameParams(primary))
-	}
-
+	name := c.contactDisplayName(contact, primary)
 	isBot := false
 	return &bridgev2.ResolveIdentifierResponse{
 		UserID: makeUserID(primary),
@@ -149,4 +119,18 @@ func (c *IMClient) contactListEntry(contact *imessage.Contact) *bridgev2.Resolve
 			IsBot:       &isBot,
 		},
 	}
+}
+
+// contactDisplayName formats a contact's name the way GetUserInfo does, falling
+// back to the identifier when the contact has no name.
+func (c *IMClient) contactDisplayName(contact *imessage.Contact, identifier string) string {
+	if contact.HasName() {
+		return c.Main.Config.FormatDisplayname(DisplaynameParams{
+			FirstName: contact.FirstName,
+			LastName:  contact.LastName,
+			Nickname:  contact.Nickname,
+			ID:        stripIdentifierPrefix(identifier),
+		})
+	}
+	return c.Main.Config.FormatDisplayname(identifierToDisplaynameParams(identifier))
 }

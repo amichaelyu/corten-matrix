@@ -203,6 +203,7 @@ type contactCandidate struct {
 	identifier string // tel:+ or mailto: form used for validation / portal key
 	rawLabel   string // phone/email as stored in the contact record
 	name       string // contact display name
+	contact    *imessage.Contact
 }
 
 // rankContactCandidates returns the identifiers of every contact whose name
@@ -242,7 +243,7 @@ func rankContactCandidates(all []*imessage.Contact, query string) []contactCandi
 				continue
 			}
 			seen[id] = true
-			candidates = append(candidates, contactCandidate{identifier: id, rawLabel: phone, name: name})
+			candidates = append(candidates, contactCandidate{identifier: id, rawLabel: phone, name: name, contact: contact})
 		}
 		for _, email := range contact.Emails {
 			email = strings.ToLower(strings.TrimSpace(email))
@@ -254,7 +255,7 @@ func rankContactCandidates(all []*imessage.Contact, query string) []contactCandi
 				continue
 			}
 			seen[id] = true
-			candidates = append(candidates, contactCandidate{identifier: id, rawLabel: email, name: name})
+			candidates = append(candidates, contactCandidate{identifier: id, rawLabel: email, name: name, contact: contact})
 		}
 	}
 	return candidates

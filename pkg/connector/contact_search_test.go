@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"maunium.net/go/mautrix/bridgev2"
@@ -104,5 +105,32 @@ func TestContactSearchRequiresLogin(t *testing.T) {
 	}
 	if _, err := c.GetContactList(context.Background()); !errors.Is(err, bridgev2.ErrNotLoggedIn) {
 		t.Fatalf("GetContactList() err = %v, want ErrNotLoggedIn", err)
+	}
+}
+
+// ResolveIdentifier normalizes the bare handles provisioning clients send, and
+// the start-chat command passes already-normalized ones — both must land on
+// the same prefixed identifier.
+func TestNormalizeStartChatIdentifierIsIdempotent(t *testing.T) {
+	for _, raw := range []string{"+17203529408", "tel:+17203529408", "Someone@Example.com", "mailto:someone@example.com"} {
+		once := normalizeStartChatIdentifier(raw)
+		if twice := normalizeStartChatIdentifier(once); twice != once {
+			t.Errorf("normalizeStartChatIdentifier(%q) = %q, but normalizing again gave %q", raw, once, twice)
+		}
+		if !strings.HasPrefix(once, "tel:") && !strings.HasPrefix(once, "mailto:") {
+			t.Errorf("normalizeStartChatIdentifier(%q) = %q, want a tel: or mailto: identifier", raw, once)
+		}
+	}
+	if got := normalizeStartChatIdentifier("+17203529408"); got != "tel:+17203529408" {
+		t.Errorf("bare phone normalized to %q, want tel:+17203529408", got)
+	}
+}
+
+func TestRankContactCandidatesKeepContact(t *testing.T) {
+	john := &imessage.Contact{FirstName: "John", Phones: []string{"555-000-0001"}, Emails: []string{"j@example.com"}}
+	for _, cand := range rankContactCandidates([]*imessage.Contact{john}, "john") {
+		if cand.contact != john {
+			t.Fatalf("candidate %q lost its contact", cand.identifier)
+		}
 	}
 }
