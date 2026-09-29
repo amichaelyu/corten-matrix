@@ -83,60 +83,8 @@ func fnContacts(ce *commands.Event) {
 		return
 	}
 
-	query := strings.ToLower(strings.Join(ce.Args, " "))
-
 	// --- Phase 1: name search across all loaded contacts ---
-	all := client.contacts.GetAllContacts()
-
-	type candidate struct {
-		identifier string // tel:+ or mailto: form used for validation / portal key
-		rawLabel   string // phone/email as stored in the contact record
-		name       string // contact display name
-	}
-	// Rank matching contacts so exact name matches come before fuzzy ones —
-	// this matters once we cap the IDS validation below, so the most relevant
-	// matches stay within the cap.
-	var exact, fuzzy []*imessage.Contact
-	for _, contact := range all {
-		switch contactMatchScore(contact, query) {
-		case matchExact:
-			exact = append(exact, contact)
-		case matchFuzzy:
-			fuzzy = append(fuzzy, contact)
-		}
-	}
-	ranked := append(exact, fuzzy...)
-
-	var candidates []candidate
-	seen := make(map[string]bool)
-	for _, contact := range ranked {
-		name := contact.Name()
-
-		for _, phone := range contact.Phones {
-			norm := normalizePhoneForPortalID(phone)
-			if norm == "" {
-				continue
-			}
-			id := "tel:" + norm
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			candidates = append(candidates, candidate{identifier: id, rawLabel: phone, name: name})
-		}
-		for _, email := range contact.Emails {
-			email = strings.ToLower(strings.TrimSpace(email))
-			if email == "" {
-				continue
-			}
-			id := "mailto:" + email
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			candidates = append(candidates, candidate{identifier: id, rawLabel: email, name: name})
-		}
-	}
+	candidates := rankContactCandidates(client.contacts.GetAllContacts(), strings.Join(ce.Args, " "))
 
 	if len(candidates) == 0 {
 		ce.Reply("No contacts found matching **\"%s\"**.", strings.Join(ce.Args, " "))
@@ -247,6 +195,69 @@ func fnContacts(ce *commands.Event) {
 		}),
 		Cancel: func() {}, // nothing to clean up; cancel reply is handled by the framework
 	})
+}
+
+// contactCandidate is one phone/email identifier of a contact whose name
+// matched a search query, before it has been validated against iMessage.
+type contactCandidate struct {
+	identifier string // tel:+ or mailto: form used for validation / portal key
+	rawLabel   string // phone/email as stored in the contact record
+	name       string // contact display name
+}
+
+// rankContactCandidates returns the identifiers of every contact whose name
+// matches query, exact name matches before fuzzy ones and deduplicated by
+// identifier. The ranking matters to callers that cap IDS validation, so the
+// most relevant matches stay within the cap. Shared by the `contacts` command
+// and SearchUsers so both surfaces find the same people.
+func rankContactCandidates(all []*imessage.Contact, query string) []contactCandidate {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil
+	}
+
+	var exact, fuzzy []*imessage.Contact
+	for _, contact := range all {
+		switch contactMatchScore(contact, query) {
+		case matchExact:
+			exact = append(exact, contact)
+		case matchFuzzy:
+			fuzzy = append(fuzzy, contact)
+		}
+	}
+	ranked := append(exact, fuzzy...)
+
+	var candidates []contactCandidate
+	seen := make(map[string]bool)
+	for _, contact := range ranked {
+		name := contact.Name()
+
+		for _, phone := range contact.Phones {
+			norm := normalizePhoneForPortalID(phone)
+			if norm == "" {
+				continue
+			}
+			id := "tel:" + norm
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			candidates = append(candidates, contactCandidate{identifier: id, rawLabel: phone, name: name})
+		}
+		for _, email := range contact.Emails {
+			email = strings.ToLower(strings.TrimSpace(email))
+			if email == "" {
+				continue
+			}
+			id := "mailto:" + email
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			candidates = append(candidates, contactCandidate{identifier: id, rawLabel: email, name: name})
+		}
+	}
+	return candidates
 }
 
 // contactMatchScore scores how well a contact's name matches the query:

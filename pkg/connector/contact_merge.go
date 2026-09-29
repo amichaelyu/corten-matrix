@@ -339,13 +339,23 @@ func (c *IMClient) canonicalContactHandle(identifier string) string {
 	if len(altIDs) <= 1 {
 		return identifier
 	}
-	sort.Strings(altIDs)
-	for _, id := range altIDs {
+	return pickCanonicalHandle(altIDs)
+}
+
+// pickCanonicalHandle picks the canonical handle among a contact's portal IDs:
+// the lowest-sorting tel: ID, else the lowest-sorting ID. It sorts ids in
+// place. Returns "" for an empty slice.
+func pickCanonicalHandle(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
 		if strings.HasPrefix(id, "tel:") {
 			return id
 		}
 	}
-	return altIDs[0]
+	return ids[0]
 }
 
 // canonicalizeDMSender remaps the sender identity for DM events so that the
