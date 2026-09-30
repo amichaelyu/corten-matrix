@@ -1,0 +1,46 @@
+diff --git a/icloud-auth/src/client.rs b/icloud-auth/src/client.rs
+--- a/icloud-auth/src/client.rs
++++ b/icloud-auth/src/client.rs
+@@ -574,6 +574,14 @@
+ 
+     pub async fn get_token(&mut self, token: &str) -> Option<String> {
+         let persisted = self.persisted.as_ref()?;
++        // With automatic logins disabled (iCloud features off), an expired or
++        // missing token is simply unavailable: no GSA login is started.
++        if token_refresh_disabled()
++            && !persisted.tokens.get(token).map_or(false, |data| data.expiration.elapsed().is_err())
++        {
++            debug!("Not refreshing tokens: automatic login is disabled by configuration (iCloud features off)");
++            return None;
++        }
+         let has_valid_token = if !persisted.tokens.is_empty() {
+             let data = persisted.tokens.get(token)?; // if it's not here, we don't have one
+             
+@@ -1356,3 +1364,18 @@
+         Ok(headers)
+     }
+ }
++
++// Set when the bridge runs without iCloud features (disable_icloud_contacts):
++// nothing then needs a fresh account token, so get_token never starts an
++// automatic GSA login. Manual logins don't go through get_token.
++static TOKEN_REFRESH_DISABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++
++/// Turn automatic token refreshes (GSA logins) off or on for this process.
++pub fn set_token_refresh_disabled(disabled: bool) {
++    TOKEN_REFRESH_DISABLED.store(disabled, std::sync::atomic::Ordering::Relaxed);
++}
++
++/// True when automatic token refreshes are turned off by configuration.
++pub fn token_refresh_disabled() -> bool {
++    TOKEN_REFRESH_DISABLED.load(std::sync::atomic::Ordering::Relaxed)
++}
+diff --git a/icloud-auth/src/lib.rs b/icloud-auth/src/lib.rs
+--- a/icloud-auth/src/lib.rs
++++ b/icloud-auth/src/lib.rs
+@@ -41,3 +41,5 @@
+     #[error("Bad GSA token header: {0}")]
+     BadTokenHeader(String),
+ }
++
++pub use client::{set_token_refresh_disabled, token_refresh_disabled};

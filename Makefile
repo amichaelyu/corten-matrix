@@ -324,6 +324,12 @@ ensure-rustpush-source:
 	@$(RP_PATCH) rp_apply "shared token refresh lock" $(APA_DIR) \
 	  third_party/patches/apple-private-apis/shared-token-refresh-lock.patch \
 	  icloud-auth/src/client.rs '^pub async fn lock_token_refresh\('
+# disable_icloud_contacts turns every iCloud feature off, so nothing needs a
+# fresh account token; the bridge then sets this flag and the breaker refuses
+# every automatic GSA login. Manual logins don't consult the breaker.
+	@$(RP_PATCH) rp_apply "token refresh disable switch" $(APA_DIR) \
+	  third_party/patches/apple-private-apis/token-refresh-disable.patch \
+	  icloud-auth/src/client.rs '^static TOKEN_REFRESH_DISABLED:'
 	@$(RP_PATCH) rp_apply "APNs reconnect spacing" $(RUSTPUSH_DIR) \
 	  third_party/patches/rustpush/apns-reconnect-spacing.patch \
 	  src/aps.rs 'static LAST_CONNECT_ATTEMPT:'

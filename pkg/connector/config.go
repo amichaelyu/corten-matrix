@@ -130,7 +130,10 @@ type IMConfig struct {
 	// When configured, this is used instead of iCloud CardDAV contacts.
 	CardDAV CardDAVConfig `yaml:"carddav"`
 
-	// DisableICloudContacts disables iCloud CardDAV and remote shared-profile refresh.
+	// DisableICloudContacts turns off every iCloud account feature: iCloud CardDAV
+	// contacts, remote shared-profile fetches, and all automatic Apple logins
+	// (token refreshes). Messaging, chat.db history and local Contacts keep
+	// working; a manual `corten-matrix login` is still possible.
 	DisableICloudContacts bool `yaml:"disable_icloud_contacts"`
 
 	// DebugDisablePrivacy is a DEVELOPMENT-ONLY switch that reverts the

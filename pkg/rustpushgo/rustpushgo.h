@@ -1127,6 +1127,11 @@ void* uniffi_rustpushgo_fn_func_restore_token_provider(
 	RustCallStatus* out_status
 );
 
+void uniffi_rustpushgo_fn_func_set_icloud_auto_login_disabled(
+	int8_t disabled,
+	RustCallStatus* out_status
+);
+
 RustBuffer ffi_rustpushgo_rustbuffer_alloc(
 	int32_t size,
 	RustCallStatus* out_status
@@ -1471,6 +1476,10 @@ uint16_t uniffi_rustpushgo_checksum_func_register_ford_key(
 );
 
 uint16_t uniffi_rustpushgo_checksum_func_restore_token_provider(
+	RustCallStatus* out_status
+);
+
+uint16_t uniffi_rustpushgo_checksum_func_set_icloud_auto_login_disabled(
 	RustCallStatus* out_status
 );
 

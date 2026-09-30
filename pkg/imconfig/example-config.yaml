@@ -107,8 +107,10 @@ read_receipts: true
 # typing indicators from iMessage contacts are unaffected.
 typing_notifications: true
 
-# Disable iCloud CardDAV and remote shared-profile refresh when the public
-# contacts-auth path is unavailable. Messages and history backfill continue.
+# Turn off every iCloud account feature: iCloud CardDAV contacts, remote
+# shared-profile fetches, and all automatic Apple logins (token refreshes).
+# Messaging, chat.db history and local Contacts keep working; a manual
+# `corten-matrix login` is still possible.
 disable_icloud_contacts: false
 
 # External CardDAV server for contact name resolution.

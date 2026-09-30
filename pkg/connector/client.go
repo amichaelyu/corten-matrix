@@ -10521,7 +10521,17 @@ func (c *IMClient) safeRefreshPetTokenThrottled() error {
 // safeRefreshPetTokenThrottled to avoid stacking GSA logins across
 // restart loops. This raw variant is appropriate only for self-throttled
 // paths like the 12h periodic refresh.
+// icloudAutoLoginDisabled is latched from IMConfig.DisableICloudContacts in
+// IMConnector.Start. With every iCloud feature off nothing needs a fresh account
+// token, so no PET refresh (a full Apple login) is attempted.
+var icloudAutoLoginDisabled bool
+
+var errICloudAutoLoginDisabled = errors.New("automatic Apple login is disabled (disable_icloud_contacts)")
+
 func safeRefreshPetToken(tp *rustpushgo.WrappedTokenProvider) error {
+	if icloudAutoLoginDisabled {
+		return errICloudAutoLoginDisabled
+	}
 	done := make(chan error, 1)
 	go func() {
 		defer func() {

@@ -59,6 +59,11 @@ func (c *IMConnector) Start(ctx context.Context) error {
 	// Start() because Init() runs before the config YAML is loaded, and before
 	// tryAutoRestore below (which logs handles). See IMConfig.DebugDisablePrivacy.
 	debugDisablePrivacy = c.Config.DebugDisablePrivacy
+	// With iCloud features off, no automatic Apple login is ever needed: turn
+	// them off both here (PET refreshes) and in the auth library (on-demand
+	// token refreshes). Before tryAutoRestore and any client connect.
+	icloudAutoLoginDisabled = c.Config.DisableICloudContacts
+	rustpushgo.SetIcloudAutoLoginDisabled(c.Config.DisableICloudContacts)
 	if debugDisablePrivacy {
 		c.Bridge.Log.Warn().Msg("debug_disable_privacy is ENABLED — log anonymization and the body scrubber are OFF, and plaintext will be re-pulled into the local DB. This is a development-only setting; do not use it in production.")
 	}

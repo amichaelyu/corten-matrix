@@ -162,6 +162,14 @@ pub fn register_ford_key(key: Vec<u8>) {
 }
 
 /// Number of Ford keys currently cached. Diagnostic only.
+/// Turn automatic Apple account logins (token refreshes) off or on for this
+/// process. The bridge turns them off when iCloud features are disabled, since
+/// nothing then needs a fresh account token. Manual logins are unaffected.
+#[uniffi::export]
+pub fn set_icloud_auto_login_disabled(disabled: bool) {
+    icloud_auth::set_token_refresh_disabled(disabled);
+}
+
 #[uniffi::export]
 pub fn ford_key_cache_size() -> u64 {
     let cache = match ford_key_cache().lock() {
@@ -1707,6 +1715,11 @@ async fn refresh_pet_with_snapshot(
     hashed_password: &[u8],
     context: &str,
 ) -> bool {
+    // iCloud features off (disable_icloud_contacts): no automatic login at all.
+    if icloud_auth::token_refresh_disabled() {
+        debug!("{}: skipping PET refresh; automatic Apple login is disabled by configuration", context);
+        return false;
+    }
     let _flight = icloud_auth::lock_token_refresh().await;
     // Same breaker as AppleAccount::get_token's automatic refresh: after a
     // failed login nobody in the process retries until the window passes.
