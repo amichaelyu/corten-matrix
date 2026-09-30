@@ -10474,10 +10474,8 @@ func (c *IMClient) periodicStateSave(log zerolog.Logger) {
 // petRefreshMinInterval throttles startup/on-demand PET refreshes to protect
 // against restart-loop-induced Apple rate limiting. login_email_pass is
 // per-user-expected but bridges in a crash-restart loop could stack several
-// per minute, which is the one failure mode that reliably trips 429s or a
-// temporary account lock. 5 min gives a comfortable margin (max 12/hour vs
-// the ~30/hour threshold where Apple's fraud systems start reacting) while
-// still allowing legitimate manual restarts close together during debugging.
+// per minute. This is a local traffic limit, not a documented Apple allowance
+// or a guarantee against rate limiting or account restrictions.
 const petRefreshMinInterval = 5 * time.Minute
 
 // petRefreshKVKey is the KV key used to persist the last PET refresh time.

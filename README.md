@@ -540,6 +540,14 @@ Most knobs live at the top level of the network connector config. Defaults shown
 
 Instead of downloading a release you can build the bridge yourself on a Mac. This path is **macOS-only**: NAC validation data is produced by Apple's native `AAAbsintheContext` framework, which exists only on macOS, so the bridge is built and run on the same Mac. There is no Linux build-from-source path — for Linux, use the prebuilt releases.
 
+This source build uses native NAC and AOSKit on the Mac; cloning the public
+dependencies does not reproduce a private OpenCider implementation or establish
+that Apple approves the client. Native validation is not a guarantee against
+account or device restrictions. Use the local Mac login flow, preserve the bridge's
+saved identity and login-backoff state, and avoid repeated login attempts after
+Apple rejects authentication. Missing required hardware identity now stops
+configuration instead of substituting a random UUID or a guessed OS version.
+
 **Requirements**
 
 - macOS 13+ (Ventura or later) — `AAAbsintheContext` requires it.

@@ -1,0 +1,18 @@
+diff --git a/src/aps.rs b/src/aps.rs
+--- a/src/aps.rs
++++ b/src/aps.rs
+@@ -1255,6 +1255,14 @@
+ impl Resource for APSConnectionResource {
+     async fn generate(self: &Arc<Self>) -> Result<JoinHandle<()>, PushError> {
++        static LAST_CONNECT_ATTEMPT: tokio::sync::Mutex<Option<tokio::time::Instant>> = tokio::sync::Mutex::const_new(None);
++        {
++            let mut last_attempt = LAST_CONNECT_ATTEMPT.lock().await;
++            if let Some(previous) = *last_attempt {
++                tokio::time::sleep_until(previous + Duration::from_secs(30)).await;
++            }
++            *last_attempt = Some(tokio::time::Instant::now());
++        }
+         info!("Generating APS");
+         let (socket, encoder, mut decoder) = match open_socket().await {
+             Ok(e) => e,
+             Err(err) => {

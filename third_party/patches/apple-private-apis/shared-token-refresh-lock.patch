@@ -1,0 +1,16 @@
+diff --git a/icloud-auth/src/client.rs b/icloud-auth/src/client.rs
+--- a/icloud-auth/src/client.rs
++++ b/icloud-auth/src/client.rs
+@@ -181,1 +181,5 @@
++pub async fn lock_token_refresh() -> tokio::sync::MutexGuard<'static, ()> {
++    TOKEN_REFRESH_FLIGHT.lock().await
++}
++
+ pub struct AppleAccount<T: AnisetteProvider> {
+diff --git a/icloud-auth/src/lib.rs b/icloud-auth/src/lib.rs
+--- a/icloud-auth/src/lib.rs
++++ b/icloud-auth/src/lib.rs
+@@ -11,2 +11,3 @@
+ use thiserror::Error;
++pub use client::lock_token_refresh;
+ #[derive(Debug, Error)]

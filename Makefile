@@ -117,7 +117,7 @@ check-deps:
 
 # From-source build feature selection.
 # ---------------------------------------------------------------------------
-# The rustpushgo crate's default feature, `cleanroom-registration`, enables
+# The legacy `cleanroom-registration` feature enables
 # `open-absinthe/native-nac-rust` + `remote-clearadi`, which are NOT provided by
 # the upstream OpenBubbles crates this from-source build vendors. So this build
 # opts out of the default and selects the native AAAbsintheContext NAC path
@@ -126,8 +126,7 @@ check-deps:
 # `anisette-*` features are skipped because they pull `prefer-*` omnisette
 # features that upstream omnisette doesn't define.
 #
-# Override on the command line to build a different feature shape, e.g.:
-#   make CARGO_FEATURES="--features cleanroom-registration"
+# Keep the native framework selected when overriding build features.
 CARGO_FEATURES := --no-default-features --features nac-apple-framework
 
 UPSTREAM_REPO := https://github.com/OpenBubbles/rustpush.git
@@ -322,6 +321,12 @@ ensure-rustpush-source:
 	@$(RP_PATCH) rp_apply "token refresh backoff" $(APA_DIR) \
 	  third_party/patches/apple-private-apis/token-refresh-backoff.patch \
 	  icloud-auth/src/client.rs '^pub fn note_token_refresh\('
+	@$(RP_PATCH) rp_apply "shared token refresh lock" $(APA_DIR) \
+	  third_party/patches/apple-private-apis/shared-token-refresh-lock.patch \
+	  icloud-auth/src/client.rs '^pub async fn lock_token_refresh\('
+	@$(RP_PATCH) rp_apply "APNs reconnect spacing" $(RUSTPUSH_DIR) \
+	  third_party/patches/rustpush/apns-reconnect-spacing.patch \
+	  src/aps.rs 'static LAST_CONNECT_ATTEMPT:'
 # Ignore self-exclusion in fast_forward_trust (Clique self-eviction fix; ports 9f29ff1).
 	@$(RP_PATCH) rp_patch "keychain self-exclusion" $(RUSTPUSH_DIR)/src/icloud/keychain.rs \
 	  's/^            for excluded in &trust\.excludeds \{$$/            let my_id = &state.user_identity.as_ref().unwrap().identifier;\n            for excluded in &trust.excludeds {\n                if excluded == my_id {\n                    warn!(\n                        "Ignoring exclusion of ourselves ({}) from peer {}",\n                        excluded,\n                        peer.0.hash.as_ref().unwrap()\n                    );\n                    continue;\n                }/' \

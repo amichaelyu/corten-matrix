@@ -12,14 +12,8 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 name = "rustpushgo"
 
 [features]
-# Public/release default: source-portable clean-room registration crypto on
-# every supported OS, including Linux (the bridge's default deployment target).
-#
-# - NAC: open-absinthe/native-nac-rust (pure Rust ValidationCtx::new/
-#   key_establishment/sign; no unicorn or Apple framework required)
-# - ADI/anisette: omnisette + icloud_auth remote-clearadi (ClearADIClient backed
-#   by the clearadi crate's portable ProvisioningSession + gen_otp)
-default = ["cleanroom-registration"]
+# Source builds use Apple's native NAC framework on macOS, matching Makefile.
+default = ["nac-apple-framework"]
 cleanroom-registration = [
     "open-absinthe/native-nac-rust",
     "rustpush/remote-clearadi",

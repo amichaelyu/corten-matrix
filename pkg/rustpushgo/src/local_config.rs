@@ -86,21 +86,41 @@ impl HardwareInfo {
         };
 
         let info = HardwareInfo {
-            product_name: c_str_to_string(raw.product_name).unwrap_or_else(|| "Mac".to_string()),
+            product_name: c_str_to_string(raw.product_name).unwrap_or_default(),
             serial_number: c_str_to_string(raw.serial_number).unwrap_or_default(),
-            platform_uuid: c_str_to_string(raw.platform_uuid).unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            platform_uuid: c_str_to_string(raw.platform_uuid).unwrap_or_default(),
             board_id: c_str_to_string(raw.board_id).unwrap_or_default(),
-            os_build_num: c_str_to_string(raw.os_build_num).unwrap_or_else(|| "25B78".to_string()),
-            os_version: c_str_to_string(raw.os_version).unwrap_or_else(|| "26.1".to_string()),
+            os_build_num: c_str_to_string(raw.os_build_num).unwrap_or_default(),
+            os_version: c_str_to_string(raw.os_version).unwrap_or_default(),
             rom: c_data_to_vec(raw.rom, raw.rom_len),
             mlb: c_str_to_string(raw.mlb).unwrap_or_default(),
             mac_address,
             root_disk_uuid: c_str_to_string(raw.root_disk_uuid).unwrap_or_default(),
-            darwin_version: c_str_to_string(raw.darwin_version).unwrap_or_else(|| "24.0.0".to_string()),
+            darwin_version: c_str_to_string(raw.darwin_version).unwrap_or_default(),
         };
 
         unsafe { hw_info_free(&mut raw) };
+        info.validate()?;
         Ok(info)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("product name", &self.product_name),
+            ("serial number", &self.serial_number),
+            ("platform UUID", &self.platform_uuid),
+            ("OS build", &self.os_build_num),
+            ("OS version", &self.os_version),
+            ("Darwin version", &self.darwin_version),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("Missing {name}; refusing to invent a Mac identity"));
+            }
+        }
+        match uuid::Uuid::parse_str(&self.platform_uuid) {
+            Ok(value) if !value.is_nil() => Ok(()),
+            _ => Err("Invalid platform UUID; refusing to invent a Mac identity".into()),
+        }
     }
 }
 
@@ -183,6 +203,58 @@ impl LocalMacOSConfig {
             icloud_ua: self.icloud_ua,
             aoskit_version: self.aoskit_version,
             udid: Some(self.device_id),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hardware() -> HardwareInfo {
+        HardwareInfo {
+            product_name: "Mac14,2".into(),
+            serial_number: "TEST-SERIAL".into(),
+            platform_uuid: "12345678-1234-4234-8234-123456789ABC".into(),
+            board_id: String::new(),
+            os_build_num: "22G513".into(),
+            os_version: "13.6.4".into(),
+            rom: vec![],
+            mlb: String::new(),
+            mac_address: [0; 6],
+            root_disk_uuid: String::new(),
+            darwin_version: "22.6.0".into(),
+        }
+    }
+
+    #[test]
+    fn native_identity_accepts_missing_optional_hardware() {
+        assert!(hardware().validate().is_ok());
+    }
+
+    #[test]
+    fn native_identity_rejects_missing_required_fields() {
+        for field in 0..6 {
+            let mut hardware = hardware();
+            let fields = [
+                &mut hardware.product_name,
+                &mut hardware.serial_number,
+                &mut hardware.platform_uuid,
+                &mut hardware.os_build_num,
+                &mut hardware.os_version,
+                &mut hardware.darwin_version,
+            ];
+            *fields.into_iter().nth(field).unwrap() = "  ".into();
+            assert!(hardware.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn native_identity_rejects_invalid_or_nil_uuid() {
+        for value in ["invalid", "00000000-0000-0000-0000-000000000000"] {
+            let mut hardware = hardware();
+            hardware.platform_uuid = value.into();
+            assert!(hardware.validate().is_err());
         }
     }
 }

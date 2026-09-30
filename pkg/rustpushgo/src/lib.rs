@@ -1707,6 +1707,7 @@ async fn refresh_pet_with_snapshot(
     hashed_password: &[u8],
     context: &str,
 ) -> bool {
+    let _flight = icloud_auth::lock_token_refresh().await;
     // Same breaker as AppleAccount::get_token's automatic refresh: after a
     // failed login nobody in the process retries until the window passes.
     if let Some(remaining) = icloud_auth::token_refresh_backoff_remaining() {
@@ -4351,6 +4352,33 @@ fn preflight_key_wrap_check() {
 }
 
 #[cfg(test)]
+mod automatic_login_tests {
+    #[test]
+    #[cfg(feature = "nac-apple-framework")]
+    fn native_validation_rejects_external_hardware_keys() {
+        assert!(super::create_config_from_hardware_key(String::new()).is_err());
+        assert!(super::create_config_from_hardware_key_with_device_id(
+            String::new(), "external-device".into(),
+        ).is_err());
+    }
+
+    #[tokio::test]
+    async fn queued_refresh_observes_failure_before_retrying() {
+        let first = icloud_auth::lock_token_refresh().await;
+        icloud_auth::note_token_refresh(true);
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            icloud_auth::lock_token_refresh(),
+        ).await.is_err());
+        icloud_auth::note_token_refresh(false);
+        drop(first);
+        let _next = icloud_auth::lock_token_refresh().await;
+        assert!(icloud_auth::token_refresh_backoff_remaining().is_some());
+        icloud_auth::note_token_refresh(true);
+    }
+}
+
+#[cfg(test)]
 mod key_wrap_preflight_tests {
     use openssl::nid::Nid;
     use openssl::symm::{Cipher, Crypter, Mode};
@@ -4924,7 +4952,7 @@ fn generalize_hw_from_seed(
     hw
 }
 
-#[cfg(feature = "hardware-key")]
+#[cfg(all(feature = "hardware-key", not(feature = "nac-apple-framework")))]
 fn _create_config_from_hardware_key_inner(base64_key: String, device_id: Option<String>) -> Result<Arc<WrappedOSConfig>, WrappedError> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     use rustpush::macos::{MacOSConfig, HardwareConfig};
@@ -5072,13 +5100,13 @@ fn _create_config_from_hardware_key_inner(base64_key: String, device_id: Option<
     }))
 }
 
-#[cfg(not(feature = "hardware-key"))]
+#[cfg(any(not(feature = "hardware-key"), feature = "nac-apple-framework"))]
 fn _create_config_from_hardware_key_inner(base64_key: String, _device_id: Option<String>) -> Result<Arc<WrappedOSConfig>, WrappedError> {
     let _ = base64_key;
     Err(WrappedError::GenericError {
-        msg: "Hardware key support not available in this build. \
-              On macOS, use the Apple ID login flow instead (which uses native validation). \
-              To enable hardware key support, rebuild with: cargo build --features hardware-key".into(),
+        msg: "External hardware keys are unavailable in this build. \
+              Use the local Mac Apple ID login flow. Native NAC validates the host Mac \
+              and cannot attest another device's hardware key.".into(),
     })
 }
 
