@@ -88,3 +88,31 @@ func TestValidateTargetsSafeGuardsNilClientAndEmptyTargets(t *testing.T) {
 		t.Fatalf("validateTargetsSafe(nil) = %#v, want nil", got)
 	}
 }
+
+func TestContactKeyFromContactMergesPhoneAndEmail(t *testing.T) {
+	contact := &imessage.Contact{
+		FirstName: "Mom",
+		Phones:    []string{"(517) 803-6710"},
+		Emails:    []string{"Zhengya3@gmail.com"},
+	}
+	got := contactKeyFromContact(contact)
+	want := "mailto:zhengya3@gmail.com|tel:+15178036710"
+	if got != want {
+		t.Fatalf("contactKeyFromContact() = %q, want %q", got, want)
+	}
+}
+
+func TestContactKeyFromContactSingleHandleOrNoName(t *testing.T) {
+	cases := map[string]*imessage.Contact{
+		"nil":           nil,
+		"single phone":  {FirstName: "A", Phones: []string{"5551234567"}},
+		"single email":  {FirstName: "A", Emails: []string{"a@example.com"}},
+		"no name":       {Phones: []string{"5551234567"}, Emails: []string{"a@example.com"}},
+		"dup same addr": {FirstName: "A", Phones: []string{"5551234567", "+1 555 123 4567"}},
+	}
+	for name, contact := range cases {
+		if got := contactKeyFromContact(contact); got != "" {
+			t.Errorf("%s: contactKeyFromContact() = %q, want \"\"", name, got)
+		}
+	}
+}

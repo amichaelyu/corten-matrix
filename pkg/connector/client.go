@@ -13581,15 +13581,19 @@ func (c *IMClient) runChatDBInitialSync(log zerolog.Logger) {
 		parsed := imessage.ParseIdentifier(chat.ChatGUID)
 		var portalKey networkid.PortalKey
 		isSms := parsed.Service == "SMS"
-		if parsed.IsGroup {
-			members := make([]string, 0, len(info.Members)+1)
-			members = append(members, addIdentifierPrefix(c.handle))
-			for _, m := range info.Members {
-				members = append(members, addIdentifierPrefix(stripSmsSuffix(m)))
-			}
-			sort.Strings(members)
+		if parsed.IsGroup && !isSms && chat.ThreadID != "" {
+			// chat.group_id is the same UUID the live path receives as
+			// sender_guid, so key by it to land in the room makePortalKey
+			// picks. Keying by roster here created a second room per group.
 			portalKey = networkid.PortalKey{
-				ID:       networkid.PortalID(strings.Join(members, ",")),
+				ID:       networkid.PortalID("gid:" + strings.ToLower(chat.ThreadID)),
+				Receiver: c.UserLogin.ID,
+			}
+		} else if parsed.IsGroup {
+			// Carrier groups have no stable group_id; key by the normalized
+			// roster, matching makePortalKey's carrier-group key.
+			portalKey = networkid.PortalKey{
+				ID:       networkid.PortalID(strings.Join(c.buildCanonicalParticipantList(info.Members), ",")),
 				Receiver: c.UserLogin.ID,
 			}
 		} else {
@@ -13609,7 +13613,7 @@ func (c *IMClient) runChatDBInitialSync(log zerolog.Logger) {
 		})
 	}
 
-	// Deduplicate DM entries for contacts with multiple phone numbers.
+	// Deduplicate DM entries for contacts with multiple phone numbers/emails.
 	{
 		type contactGroup struct {
 			indices []int
@@ -13637,13 +13641,29 @@ func (c *IMClient) runChatDBInitialSync(log zerolog.Logger) {
 			if len(group.indices) <= 1 {
 				continue
 			}
+			// Keep the canonical handle's entry so the live path
+			// (canonicalContactHandle) routes to the same portal.
 			primaryIdx := group.indices[0]
-			for _, idx := range group.indices[1:] {
+			ids := make([]string, len(group.indices))
+			for i, idx := range group.indices {
+				ids[i] = string(entries[idx].portalKey.ID)
+			}
+			canonical := pickCanonicalHandle(ids)
+			for _, idx := range group.indices {
+				if string(entries[idx].portalKey.ID) == canonical {
+					primaryIdx = idx
+					break
+				}
+			}
+			for _, idx := range group.indices {
+				if idx == primaryIdx {
+					continue
+				}
 				skip[idx] = true
 				log.Info().
 					Str("skip_portal", string(entries[idx].portalKey.ID)).
 					Str("primary_portal", string(entries[primaryIdx].portalKey.ID)).
-					Msg("Merging DM portal for contact with multiple phone numbers")
+					Msg("Merging DM portal for contact with multiple handles")
 			}
 		}
 

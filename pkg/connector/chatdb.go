@@ -109,6 +109,26 @@ func (db *chatDB) findGroupChatGUID(portalID string, c *IMClient) string {
 	return ""
 }
 
+// findGroupChatGUIDsByGroupID returns the chat GUIDs whose chat.group_id
+// matches groupID (case-insensitive). chat.db can hold more than one chat row
+// per group (e.g. after a service change), so all matches are returned.
+func (db *chatDB) findGroupChatGUIDsByGroupID(groupID string) []string {
+	if groupID == "" {
+		return nil
+	}
+	chats, err := db.api.GetChatsWithMessagesAfter(time.Time{})
+	if err != nil {
+		return nil
+	}
+	var guids []string
+	for _, chat := range chats {
+		if strings.EqualFold(chat.ThreadID, groupID) {
+			guids = append(guids, chat.ChatGUID)
+		}
+	}
+	return guids
+}
+
 // chatDBReplyTarget returns the correct MessageOptionalPartID for a reply,
 // mapping chat.db balloon-part index to the emitted part IDs:
 // bp<=0 -> base GUID (text body); bp>=1 -> {guid}_att{bp-1} (attachment).
@@ -127,7 +147,11 @@ func (db *chatDB) FetchMessages(ctx context.Context, params bridgev2.FetchMessag
 	log := zerolog.Ctx(ctx)
 
 	var chatGUIDs []string
-	if strings.Contains(portalID, ",") {
+	if strings.HasPrefix(portalID, "gid:") {
+		// Group portal keyed by group UUID: match chat.group_id. These used
+		// to fall through to the DM branch and never got history.
+		chatGUIDs = db.findGroupChatGUIDsByGroupID(strings.TrimPrefix(portalID, "gid:"))
+	} else if strings.Contains(portalID, ",") {
 		// Group portal: find chat GUID by matching members
 		chatGUID := db.findGroupChatGUID(portalID, c)
 		if chatGUID != "" {
@@ -222,6 +246,18 @@ func (db *chatDB) FetchMessages(ctx context.Context, params bridgev2.FetchMessag
 	// Get an intent for uploading media. The bot intent works for all uploads.
 	intent := c.Main.Bridge.Bot
 
+	// Skip parts that are already bridged (for this receiver, in any portal)
+	// before converting them. bridgev2 only dedups backward backfill after
+	// conversion, and only when AggressiveDeduplication is set; without this,
+	// a message already stored under a contact's other handle or the group's
+	// other portal re-uploaded every attachment and then failed the batch on
+	// the message table's unique key, so the task retried forever.
+	alreadyBridged := func(id string) bool {
+		existing, err := c.Main.Bridge.DB.Message.GetFirstPartByID(ctx, params.Portal.Receiver, makeMessageID(id))
+		return err == nil && existing != nil
+	}
+	skippedBridged := 0
+
 	backfillMessages := make([]*bridgev2.BackfillMessage, 0, len(messages))
 	for _, msg := range messages {
 		if msg.ItemType != imessage.ItemTypeMessage || msg.Tapback != nil {
@@ -239,7 +275,9 @@ func (db *chatDB) FetchMessages(ctx context.Context, params bridgev2.FetchMessag
 		msg.Text = strings.TrimSpace(msg.Text)
 
 		// Only create a text part if there's actual text content
-		if msg.Text != "" || msg.Subject != "" {
+		if (msg.Text != "" || msg.Subject != "") && alreadyBridged(msg.GUID) {
+			skippedBridged++
+		} else if msg.Text != "" || msg.Subject != "" {
 			cm, err := convertChatDBMessage(ctx, params.Portal, intent, msg, c.Main.Config.URLPreviewsInBackfill)
 			if err == nil {
 				backfillMessages = append(backfillMessages, &bridgev2.BackfillMessage{
@@ -259,6 +297,10 @@ func (db *chatDB) FetchMessages(ctx context.Context, params bridgev2.FetchMessag
 		// check for and bridge any companion MOV alongside it.
 		for i, att := range msg.Attachments {
 			if att == nil {
+				continue
+			}
+			if alreadyBridged(fmt.Sprintf("%s_att%d", msg.GUID, i)) {
+				skippedBridged++
 				continue
 			}
 			attCm, err := convertChatDBAttachment(ctx, params.Portal, intent, msg, att, c.Main.Config.VideoTranscoding, c.Main.Config.HEICConversion, c.Main.Config.HEICJPEGQuality)
@@ -300,11 +342,25 @@ func (db *chatDB) FetchMessages(ctx context.Context, params bridgev2.FetchMessag
 		}
 	}
 
+	hasMore := len(messages) >= count
+	if skippedBridged > 0 {
+		log.Info().
+			Int("skipped_already_bridged", skippedBridged).
+			Int("kept", len(backfillMessages)).
+			Msg("chat.db backfill: skipped parts already bridged")
+		if len(backfillMessages) == 0 {
+			// Everything here is already bridged. Reporting HasMore with no
+			// messages leaves the backward task undone, and with no new oldest
+			// message the next fetch returns this same batch, forever.
+			hasMore = false
+		}
+	}
+
 	return &bridgev2.FetchMessagesResponse{
 		Messages:                backfillMessages,
-		HasMore:                 len(messages) >= count,
+		HasMore:                 hasMore,
 		Forward:                 params.Forward,
-		AggressiveDeduplication: params.Forward,
+		AggressiveDeduplication: true,
 	}, nil
 }
 

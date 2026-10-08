@@ -45,11 +45,20 @@ func (c *IMClient) resolveContactPortalID(identifier string) networkid.PortalID 
 		return defaultID
 	}
 
-	ctx := context.Background()
+	// Try the canonical handle first, then the identifier's own portal, then
+	// the rest. Skipping the identifier outright (as this used to) sent a
+	// phone message to the email room and vice versa once both existed.
+	canonical := pickCanonicalHandle(append([]string(nil), altIDs...))
+	candidates := make([]string, 0, len(altIDs)+1)
+	candidates = append(candidates, canonical, identifier)
 	for _, altID := range altIDs {
-		if altID == identifier {
-			continue
+		if altID != canonical && altID != identifier {
+			candidates = append(candidates, altID)
 		}
+	}
+
+	ctx := context.Background()
+	for _, altID := range candidates {
 		portal, err := c.Main.Bridge.GetExistingPortalByKey(ctx, networkid.PortalKey{
 			ID:       networkid.PortalID(altID),
 			Receiver: c.UserLogin.ID,
@@ -251,24 +260,19 @@ func (c *IMClient) getContactChatGUIDs(portalID string) []string {
 }
 
 // contactKeyFromContact returns a stable identity key for grouping a contact's
-// DM entries during initial sync deduplication. Returns "" if no merging is
-// needed (single phone, no name, etc.).
+// DM entries during initial sync deduplication. Covers phones and emails, so
+// a contact reachable at a phone and an email gets one portal. Returns "" if
+// no merging is needed (single handle, no name, etc.).
 func contactKeyFromContact(contact *imessage.Contact) string {
 	if contact == nil || !contact.HasName() {
 		return ""
 	}
-	phones := make([]string, 0, len(contact.Phones))
-	for _, p := range contact.Phones {
-		n := normalizePhoneForPortalID(p)
-		if n != "" {
-			phones = append(phones, n)
-		}
-	}
-	if len(phones) <= 1 {
+	ids := contactPortalIDs(contact)
+	if len(ids) <= 1 {
 		return ""
 	}
-	sort.Strings(phones)
-	return strings.Join(phones, "|")
+	sort.Strings(ids)
+	return strings.Join(ids, "|")
 }
 
 // contactPortalIDs returns all portal ID strings for a contact's phone numbers
