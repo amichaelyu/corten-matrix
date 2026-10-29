@@ -13,6 +13,10 @@ cloudkit_backfill: false
 # "chatdb" reads the local macOS chat.db (requires Full Disk Access).
 backfill_source: cloudkit
 
+# Only backfill chat.db messages from the last N days. Older messages are not
+# fetched or uploaded, and backward backfill stops at the cutoff. 0 = no limit.
+backfill_max_age_days: 0
+
 # Enable automatic video transcoding/remuxing of non-MP4 videos (e.g.
 # QuickTime .mov) to MP4 for broad Matrix client compatibility.
 # Requires ffmpeg to be installed on the system.

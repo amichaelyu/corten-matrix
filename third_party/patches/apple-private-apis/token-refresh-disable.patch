@@ -38,9 +38,12 @@ diff --git a/icloud-auth/src/client.rs b/icloud-auth/src/client.rs
 diff --git a/icloud-auth/src/lib.rs b/icloud-auth/src/lib.rs
 --- a/icloud-auth/src/lib.rs
 +++ b/icloud-auth/src/lib.rs
-@@ -41,3 +41,5 @@
+@@ -40,4 +40,6 @@ pub enum Error {
+     BadSpd(String),
      #[error("Bad GSA token header: {0}")]
      BadTokenHeader(String),
- }
+-}
+\ No newline at end of file
++}
 +
 +pub use client::{set_token_refresh_disabled, token_refresh_disabled};

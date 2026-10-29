@@ -1,8 +1,11 @@
 package connector
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	up "go.mau.fi/util/configupgrade"
 	"gopkg.in/yaml.v3"
 )
 
@@ -191,4 +194,22 @@ func TestIMConfig_URLPreviewsInBackfill(t *testing.T) {
 			t.Error("URLPreviewsInBackfill should be false")
 		}
 	})
+}
+
+func TestIMConfig_BackfillMaxAgeDaysSurvivesUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("backfill_source: chatdb\nbackfill_max_age_days: 30\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := up.Do(path, false, &up.StructUpgrader{SimpleUpgrader: upgradeConfig, Base: ExampleConfig})
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	var c IMConfig
+	if err := yaml.Unmarshal(out, &c); err != nil {
+		t.Fatalf("UnmarshalYAML error: %v", err)
+	}
+	if c.BackfillMaxAgeDays != 30 {
+		t.Errorf("BackfillMaxAgeDays = %d after upgrade, want 30", c.BackfillMaxAgeDays)
+	}
 }

@@ -243,6 +243,20 @@ func (db *chatDB) FetchMessages(ctx context.Context, params bridgev2.FetchMessag
 
 	log.Info().Strs("chat_guids", chatGUIDs).Int("raw_message_count", len(messages)).Msg("Got messages from chat.db")
 
+	// Drop messages older than the configured window. Once a batch reaches
+	// the cutoff there is nothing further back worth fetching, so the
+	// backward task ends instead of paging through the rest of history.
+	reachedCutoff := false
+	if days := c.Main.Config.BackfillMaxAgeDays; days > 0 {
+		var dropped int
+		messages, dropped = dropMessagesBefore(messages, time.Now().AddDate(0, 0, -days))
+		reachedCutoff = dropped > 0
+		if dropped > 0 {
+			log.Info().Int("dropped", dropped).Int("kept", len(messages)).Int("max_age_days", days).
+				Msg("chat.db backfill: dropped messages older than backfill_max_age_days")
+		}
+	}
+
 	// Get an intent for uploading media. The bot intent works for all uploads.
 	intent := c.Main.Bridge.Bot
 
@@ -342,7 +356,7 @@ func (db *chatDB) FetchMessages(ctx context.Context, params bridgev2.FetchMessag
 		}
 	}
 
-	hasMore := len(messages) >= count
+	hasMore := len(messages) >= count && !reachedCutoff
 	if skippedBridged > 0 {
 		log.Info().
 			Int("skipped_already_bridged", skippedBridged).
@@ -362,6 +376,15 @@ func (db *chatDB) FetchMessages(ctx context.Context, params bridgev2.FetchMessag
 		Forward:                 params.Forward,
 		AggressiveDeduplication: true,
 	}, nil
+}
+
+// dropMessagesBefore removes messages older than cutoff from a chronologically
+// sorted slice and reports how many were removed.
+func dropMessagesBefore(messages []*imessage.Message, cutoff time.Time) ([]*imessage.Message, int) {
+	i := sort.Search(len(messages), func(i int) bool {
+		return !messages[i].Time.Before(cutoff)
+	})
+	return messages[i:], i
 }
 
 // ============================================================================

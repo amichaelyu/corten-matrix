@@ -37,6 +37,12 @@ type IMConfig struct {
 	// chat.db (requires Full Disk Access).
 	BackfillSource string `yaml:"backfill_source"`
 
+	// BackfillMaxAgeDays limits chat.db backfill to messages from the last N
+	// days. Older messages are not fetched, converted, or uploaded, and a
+	// backward backfill stops once it reaches the cutoff. 0 (default) means
+	// no limit.
+	BackfillMaxAgeDays int `yaml:"backfill_max_age_days"`
+
 	// VideoTranscoding enables automatic remuxing/transcoding of non-MP4
 	// videos (e.g. QuickTime .mov) to MP4 for broad Matrix client
 	// compatibility.  Requires ffmpeg to be installed.  Default is false.
@@ -244,6 +250,7 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "displayname_template")
 	helper.Copy(up.Bool, "cloudkit_backfill")
 	helper.Copy(up.Str, "backfill_source")
+	helper.Copy(up.Int, "backfill_max_age_days")
 	helper.Copy(up.Bool, "video_transcoding")
 	helper.Copy(up.Bool, "heic_conversion")
 	helper.Copy(up.Int, "heic_jpeg_quality")

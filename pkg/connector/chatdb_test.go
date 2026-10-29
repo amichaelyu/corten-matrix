@@ -39,3 +39,26 @@ func TestFindGroupChatGUIDsByGroupID(t *testing.T) {
 		t.Fatalf("unknown group = %#v, want nil", got)
 	}
 }
+
+func TestDropMessagesBefore(t *testing.T) {
+	cutoff := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	msgs := []*imessage.Message{
+		{GUID: "old", Time: cutoff.Add(-time.Hour)},
+		{GUID: "edge", Time: cutoff},
+		{GUID: "new", Time: cutoff.Add(time.Hour)},
+	}
+
+	got, dropped := dropMessagesBefore(msgs, cutoff)
+	if dropped != 1 || len(got) != 2 || got[0].GUID != "edge" || got[1].GUID != "new" {
+		t.Fatalf("dropMessagesBefore() kept %d, dropped %d; want edge+new kept, 1 dropped", len(got), dropped)
+	}
+	if got, dropped := dropMessagesBefore(msgs, cutoff.Add(-24*time.Hour)); dropped != 0 || len(got) != 3 {
+		t.Fatalf("all within window: %d kept, %d dropped; want 3, 0", len(got), dropped)
+	}
+	if got, dropped := dropMessagesBefore(msgs, cutoff.Add(24*time.Hour)); dropped != 3 || len(got) != 0 {
+		t.Fatalf("all outside window: %d kept, %d dropped; want 0, 3", len(got), dropped)
+	}
+	if got, dropped := dropMessagesBefore(nil, cutoff); dropped != 0 || len(got) != 0 {
+		t.Fatalf("nil input: %d kept, %d dropped; want 0, 0", len(got), dropped)
+	}
+}
